@@ -1,0 +1,31 @@
+# Sensitive Configuration
+.env
+data/sessions/
+*.session
+*.session-journal
+
+# Database and Data
+data/copilot.db
+data/*.db
+data/temp/
+
+# Large Documents and Archived Data
+docs/archived/
+data/archived/
+data/metadata/
+
+# Python Environment
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+env/
+.env
+
+# Workspace Metadata
+.agent/
+.gemini/
+.vscode/
+.idea/
+*.swp
+*.bak
