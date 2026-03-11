@@ -899,14 +899,13 @@ async def sync_channels():
                 print(f" DEBUG: Iterating messages for {source_name} (ID: {chat_id}) with min_id={last_id}")
                 # 逐条处理消息 (抓取阶段)
                 try:
-                        async for message in client.iter_messages(entity, min_id=last_id, reverse=True):
-                            # print(f" DEBUG: Found message #{message.id}")
-                            # 细粒度中断检查（每处理 10 条消息检查一次）
-                            msg_count += 1
-                            if msg_count % 10 == 0 and os.path.exists(STOP_FLAG):
-                                print(f"  🛑 中断：[{source_name}] 处理中途退出...")
-                                interrupted = True
-                                break
+                    async for message in client.iter_messages(entity, min_id=last_id, reverse=True):
+                        # 细粒度中断检查（每处理 10 条消息检查一次）
+                        msg_count += 1
+                        if msg_count % 10 == 0 and os.path.exists(STOP_FLAG):
+                            print(f"  🛑 中断：[{source_name}] 处理中途退出...")
+                            interrupted = True
+                            break
 
                         if min_source_msg_id is None: min_source_msg_id = message.id
                         msg_type = classify_message(message)
@@ -915,7 +914,13 @@ async def sync_channels():
                             s['skipped'] += 1
                             if message.id > max_msg_id: max_msg_id = message.id
                             continue
-                    
+                        
+                        post_time = message.date.strftime("%Y-%m-%d %H:%M")
+                        orig_time = message.date.strftime("%Y-%m-%d %H:%M:%S")
+                        sender_name = "Bot" if message.out else "User"
+                        if message.sender:
+                            sender_name = getattr(message.sender, 'first_name', '') or getattr(message.sender, 'title', '') or str(message.sender_id)
+
                         if msg_type in ('text', 'link', 'link_preview'):
                             if pending_group:
                                 group_index += 1
@@ -962,8 +967,8 @@ async def sync_channels():
                         pending_group.append(message)
                         if message.id > max_msg_id: max_msg_id = message.id
 
-                # 处理收尾
-                if pending_group:
+                    # 处理收尾
+                    if pending_group:
                         group_index += 1
                         result = await flush_media_group(
                             client, target_entity, pending_group,
