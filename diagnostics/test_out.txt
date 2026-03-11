@@ -1,0 +1,19 @@
+[INIT] Loading config from: F:\funny_project\tgporncopilot\.env
+Traceback (most recent call last):
+  File "F:\funny_project\tgporncopilot\src\backup_mode\backup.py", line 477, in backup_channel
+    db.update_backup_offset(chat_id, max(m['msg_id'] for m in records), is_test=is_test)
+  File "F:\funny_project\tgporncopilot\src\db.py", line 601, in update_backup_offset
+    ''', (norm_id, last_msg_id, datetime.now().isoformat(), 1 if is_test else 0))
+          ^^^^^^^
+NameError: name 'norm_id' is not defined
+🚀 Testing backup for: -1001395222731
+📡 正在拉取备份目标: -1001395222731...
+  ⚠️ [警告] 频道被 Telegram 标记为局部受限，仍尝试访问...
+🎯 已锁定: 紀錄庫-紀錄用頻道 (ID: -1001395222731)
+  📅 增量模式: 继续拉取 msg #44871 之后的消息。
+  📂 已载入历史记录: backup_#B2_紀錄庫-紀錄用頻道_20260304_165649.json (共 41657 条)
+✅ 紀錄庫-紀錄用頻道 抓取到 110 条新消息，正在合并写入...
+❌ 备份 -1001395222731 失败: name 'norm_id' is not defined
+
+✅ Result: None
+⚠️ Result is None (indicates exception caught in backup_channel)

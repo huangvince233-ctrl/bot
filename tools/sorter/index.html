@@ -1,0 +1,2116 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>🔬 候选词分拣工具 · P1.5</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <style>
+      :root {
+        --bg: #0b0e14;
+        --surface: #161922;
+        --card: #1f2330;
+        --border: #2d3244;
+        --text: #f1f5f9;
+        --muted: #94a3b8;
+        --accent: #2563eb; /* Tech Blue */
+        --creator: #10b981;
+        --actor: #f59e0b;
+        --tag: #3b82f6;
+        --noise: #f43f5e;
+        --skip: #64748b;
+        --shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+        --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.2), 0 4px 6px -2px rgba(0, 0, 0, 0.1);
+      }
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+      body {
+        background: var(--bg);
+        color: var(--text);
+        font-family: "Inter", system-ui, sans-serif;
+        min-height: 100vh;
+      }
+
+      /* ─── Header ─────────────────── */
+      .header {
+        background: var(--surface);
+        border-bottom: 1px solid var(--border);
+        padding: 14px 24px;
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        position: sticky;
+        top: 0;
+        z-index: 100;
+      }
+      .header h1 {
+        font-size: 1.1rem;
+        font-weight: 700;
+        color: var(--accent);
+        flex: 0;
+        white-space: nowrap;
+      }
+      .search-box {
+        flex: 1;
+        max-width: 320px;
+      }
+      .search-box input {
+        width: 100%;
+        padding: 7px 12px;
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        color: var(--text);
+        font-size: 0.875rem;
+        outline: none;
+      }
+      .search-box input:focus {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.2);
+      }
+      .header-title-box {
+          background: linear-gradient(135deg, var(--accent), #4f46e5);
+          background-clip: text;
+          -webkit-background-clip: text;
+          -webkit-text-fill-color: transparent;
+          font-weight: 800;
+      }
+      .stats {
+        color: var(--muted);
+        font-size: 0.8rem;
+        flex: 1;
+      }
+      .btn {
+        padding: 8px 16px;
+        border-radius: 8px;
+        border: none;
+        cursor: pointer;
+        font-size: 0.85rem;
+        font-weight: 600;
+        transition: all 0.15s;
+      }
+      .btn-primary {
+        background: var(--accent);
+        color: #fff;
+      }
+      .btn-primary:hover {
+        opacity: 0.85;
+      }
+      .btn-danger {
+        background: var(--noise);
+        color: #fff;
+      }
+      .btn-secondary {
+        background: var(--surface);
+        color: var(--text);
+        border: 1px solid var(--border);
+      }
+      .btn-secondary:hover {
+        border-color: var(--accent);
+      }
+      .btn:disabled {
+        opacity: 0.4;
+        cursor: not-allowed;
+      }
+      .hidden {
+        display: none !important;
+      }
+
+      /* ─── Main Layout ─────────────── */
+      .container {
+        max-width: 1280px;
+        margin: 0 auto;
+        padding: 20px 24px;
+      }
+
+      /* ─── Toolbar ─────────────────── */
+      .toolbar {
+        display: flex;
+        gap: 10px;
+        margin-bottom: 16px;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+      .toolbar-sep {
+        color: var(--muted);
+        font-size: 0.8rem;
+      }
+
+      /* ─── Table & Cards ───────────────────── */
+      .table-wrap {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        box-shadow: var(--shadow);
+        overflow: hidden;
+        transition: box-shadow 0.2s;
+      }
+      .table-wrap:hover {
+        box-shadow: var(--shadow-lg);
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+      thead th {
+        background: var(--card);
+        padding: 12px;
+        text-align: left;
+        font-size: 0.8rem;
+        font-weight: 700;
+        color: var(--text); /* 增强对比度 */
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        border-bottom: 2px solid var(--border);
+        white-space: nowrap; /* 禁止表头折行 */
+      }
+      thead th.center {
+        text-align: center;
+      }
+      tbody tr {
+        border-bottom: 1px solid var(--border);
+        transition: background 0.1s;
+      }
+      tbody tr:last-child {
+        border-bottom: none;
+      }
+      tbody tr:hover {
+        background: var(--card);
+      }
+      tbody tr.decided {
+        background: rgba(99, 102, 241, 0.05);
+      }
+      td {
+        padding: 9px 12px;
+        font-size: 0.875rem;
+        vertical-align: middle;
+      }
+      td.center {
+        text-align: center;
+      }
+      .word {
+        font-family: "Fira Code", monospace;
+        font-weight: 600;
+        color: #c4b5fd;
+        font-size: 0.9rem;
+      }
+      .count {
+        font-size: 0.78rem;
+        color: var(--muted);
+      }
+      .source-badge {
+        display: inline-block;
+        font-size: 0.7rem;
+        padding: 2px 6px;
+        border-radius: 4px;
+        background: var(--card);
+        color: var(--muted);
+        border: 1px solid var(--border);
+      }
+
+      /* ─── Checkboxes ──────────────── */
+      .cb-group {
+        display: flex;
+        gap: 6px;
+        justify-content: center;
+      }
+      .cb-btn {
+        width: 38px; /* 加大点击区域 */
+        height: 34px;
+        border-radius: 8px;
+        border: 2px solid var(--border);
+        background: var(--bg);
+        cursor: pointer;
+        font-size: 0.85rem;
+        font-weight: 800;
+        color: var(--muted);
+        transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        user-select: none;
+      }
+      .cb-btn:hover {
+        border-color: currentColor;
+      }
+      .cb-btn.creator {
+        --c: var(--creator);
+      }
+      .cb-btn.actor {
+        --c: var(--actor);
+      }
+      .cb-btn.tag {
+        --c: var(--tag);
+      }
+      .cb-btn.noise {
+        --c: var(--noise);
+      }
+      .cb-btn.active {
+        background: var(--c);
+        border-color: var(--c);
+        color: #fff;
+      }
+      .cb-btn.creator.active {
+        background: var(--creator);
+        border-color: var(--creator);
+      }
+      .cb-btn.actor.active {
+        background: var(--actor);
+        border-color: var(--actor);
+      }
+      .cb-btn.tag.active {
+        background: var(--tag);
+        border-color: var(--tag);
+      }
+      .cb-btn.noise.active {
+        background: var(--noise);
+        border-color: var(--noise);
+      }
+
+      /* ─── Category Select Popup ────── */
+      .cat-tag-wrap {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 4px;
+      }
+      .cat-label {
+        font-size: 0.65rem;
+        color: var(--muted);
+        display: block;
+        margin-top: 2px;
+        max-width: 80px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        cursor: pointer;
+      }
+      .cat-label:hover {
+        color: var(--accent);
+        text-decoration: underline;
+      }
+      .category-node {
+        border-radius: 8px;
+        background: rgba(255,255,255,0.02);
+        padding: 8px;
+        margin-bottom: 12px;
+      }
+      .expand-btn {
+        background: #2d3244 !important; /* var(--border) color for solid background */
+        border: 1px solid #4a5568 !important;
+        color: #fff !important;
+        font-weight: 700;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+      }
+      .expand-btn:hover {
+        background: #4a5568 !important;
+        border-color: var(--accent) !important;
+        transform: translateY(-1px);
+      }
+      
+      /* Row Layout */
+      .entity-list-container {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        padding-bottom: 20px;
+      }
+      .entity-row {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 8px 16px;
+        display: flex;
+        align-items: center;
+        gap: 20px;
+        transition: all 0.2s;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+      }
+      .entity-row:hover {
+        border-color: var(--accent);
+        background: rgba(255,255,255,0.03);
+      }
+      .entity-info {
+        flex: 0 0 180px;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        border-right: 1px solid rgba(255,255,255,0.05);
+        padding-right: 12px;
+        min-width: 0;
+      }
+      .entity-name {
+        font-weight: 800;
+        font-size: 0.95rem;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .alias-scroll-area {
+        flex: 1;
+        overflow-x: auto;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 4px 0;
+        scrollbar-width: thin;
+        scrollbar-color: rgba(255,255,255,0.1) transparent;
+      }
+      .alias-scroll-area::-webkit-scrollbar {
+        height: 4px;
+      }
+      .alias-scroll-area::-webkit-scrollbar-thumb {
+        background: rgba(255,255,255,0.1);
+        border-radius: 4px;
+      }
+      .entity-actions {
+        flex: 0 0 auto;
+        display: flex;
+        gap: 8px;
+        border-left: 1px solid rgba(255,255,255,0.05);
+        padding-left: 12px;
+      }
+      
+      .category-node:hover {
+        background: rgba(255,255,255,0.04);
+      }
+      .popover {
+        position: absolute;
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+        padding: 8px;
+        z-index: 1000;
+        display: none;
+        flex-direction: column;
+        gap: 4px;
+        min-width: 120px;
+      }
+      .popover.open { display: flex; }
+      .pop-item {
+        padding: 6px 10px;
+        font-size: 0.8rem;
+        cursor: pointer;
+        border-radius: 4px;
+      }
+      .pop-item:hover { background: var(--bg); color: var(--accent); }
+      .pop-item.active { background: var(--accent); color: #fff; }
+      .pop-divider { height: 1px; background: var(--border); margin: 4px 0; }
+      .pop-input {
+        background: var(--bg);
+        border: 1px solid var(--border);
+        color: var(--text);
+        padding: 4px 8px;
+        font-size: 0.75rem;
+        border-radius: 4px;
+        outline: none;
+      }
+
+      /* ─── Pagination ──────────────── */
+      .pagination {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        justify-content: center;
+        padding: 18px 0 8px;
+        flex-wrap: wrap;
+      }
+      .page-btn {
+        width: 34px;
+        height: 34px;
+        border-radius: 8px;
+        border: 1px solid var(--border);
+        background: var(--surface);
+        color: var(--text);
+        cursor: pointer;
+        font-size: 0.85rem;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: all 0.12s;
+      }
+      .page-btn:hover {
+        border-color: var(--accent);
+      }
+      .page-btn.active {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: #fff;
+        font-weight: 700;
+      }
+      .page-btn:disabled {
+        opacity: 0.35;
+        cursor: not-allowed;
+      }
+
+      /* ─── Progress Panel      /* 进度面板增强 */
+      .progress-panel {
+        position: fixed;
+        bottom: 20px;
+        right: 20px;
+        width: 450px;
+        max-height: 500px;
+        background: #1e1e1e;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 12px;
+        box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+        z-index: 10000;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        animation: slideUp 0.3s ease;
+      }
+      @keyframes slideUp { from { transform: translateY(100px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+      .progress-header {
+        padding: 12px 16px;
+        background: rgba(255,255,255,0.05);
+        border-bottom: 1px solid rgba(255,255,255,0.1);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        font-weight: 600;
+        color: var(--accent);
+      }
+      #progressLogs {
+        padding: 10px;
+        overflow-y: auto;
+        flex: 1;
+        font-family: 'Consolas', monospace;
+        font-size: 13px;
+        line-height: 1.6;
+      }
+      .progress-row {
+        margin-bottom: 8px;
+        padding-bottom: 8px;
+        border-bottom: 1px solid rgba(255,255,255,0.03);
+      }
+      .progress-bar-container {
+        height: 6px;
+        background: rgba(255,255,255,0.05);
+        border-radius: 3px;
+        margin-top: 6px;
+        overflow: hidden;
+      }
+      .progress-bar-fill {
+        height: 100%;
+        background: var(--accent);
+        width: 0%;
+        transition: width 0.3s ease;
+      }
+      .report-box {
+        background: rgba(0,0,0,0.2);
+        padding: 15px;
+        border-radius: 8px;
+        border: 1px solid var(--accent);
+        margin-top: 10px;
+        white-space: pre-wrap;
+        color: #ddd;
+        font-size: 14px;
+        box-shadow: 0 0 15px rgba(0, 150, 255, 0.1);
+      }
+      .close-progress { cursor: pointer; opacity: 0.6; transition: 0.2s; }
+      .close-progress:hover { opacity: 1; }
+      .progress-panel.hidden {
+        display: none;
+      }
+      .log-entry {
+        font-size: 0.8rem;
+        color: var(--muted);
+      }
+      .log-entry.running {
+        color: #60a5fa;
+      }
+      .log-entry.done {
+        color: var(--creator);
+      }
+      .log-entry.error {
+        color: var(--noise);
+      }
+
+      /* ─── Sample Expand Panel ────── */
+      .expand-btn {
+        background: none;
+        border: 1px solid var(--border);
+        color: var(--muted);
+        cursor: pointer;
+        font-size: 0.75rem;
+        padding: 2px 8px;
+        border-radius: 4px;
+        transition: all 0.15s;
+        white-space: nowrap;
+      }
+      .expand-btn:hover {
+        border-color: var(--accent);
+        color: var(--accent);
+      }
+      .expand-btn.open {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: #fff;
+      }
+      .sample-row {
+        display: none;
+      }
+      .sample-row.open {
+        display: table-row;
+      }
+      .sample-row td {
+        padding: 0 12px 12px 50px;
+        background: var(--bg);
+      }
+      .sample-list {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+      }
+      .sample-list li {
+        padding: 8px 12px;
+        margin: 4px 0;
+        background: var(--surface);
+        border-left: 3px solid var(--accent);
+        border-radius: 0 6px 6px 0;
+        font-size: 0.8rem;
+        color: var(--text);
+        line-height: 1.5;
+        word-break: break-all;
+      }
+      .sample-list li em {
+        color: var(--muted);
+        font-style: normal;
+        font-size: 0.7rem;
+      }
+      .sample-loading {
+        color: var(--muted);
+        font-size: 0.8rem;
+        padding: 8px;
+      }
+
+      /* ─── Decision Summary Bar ────── */
+      .summary-bar {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 12px 18px;
+        margin-bottom: 16px;
+        display: flex;
+        gap: 24px;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+      .summary-item {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 0.85rem;
+      }
+      .dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+      }
+      .dot.creator {
+        background: var(--creator);
+      }
+      .dot.actor {
+        background: var(--actor);
+      }
+      .dot.tag {
+        background: var(--tag);
+      }
+      .dot.noise {
+        background: var(--noise);
+      }
+      .summary-bar .commit-btn {
+        margin-left: auto;
+      }
+      .category-node {
+        background: rgba(255, 255, 255, 0.01);
+        border-radius: 10px;
+        transition: all 0.2s;
+        border: 1px solid transparent;
+      }
+      .category-node:hover {
+        background: rgba(255, 255, 255, 0.03);
+        border-color: rgba(255, 255, 255, 0.05);
+      }
+      .keyword-card {
+        padding: 6px 12px !important;
+        border-radius: 10px !important;
+        background: var(--surface) !important;
+        border: 1px solid var(--border) !important;
+        transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1) !important;
+      }
+      .keyword-card:hover {
+        transform: translateY(-2px);
+        border-color: var(--accent) !important;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+      }
+      .batch-badge {
+        font-size: 0.7rem;
+        color: var(--muted);
+        background: rgba(148, 163, 184, 0.1);
+        padding: 2px 8px;
+        border-radius: 20px;
+        border: 1px solid rgba(148, 163, 184, 0.1);
+      }
+      .entity-card {
+        background: var(--surface) !important;
+        border-radius: 12px !important;
+        border: 1px solid var(--border) !important;
+        padding: 12px !important;
+        transition: all 0.2s !important;
+      }
+      .entity-card:hover {
+        transform: translateY(-3px);
+        box-shadow: var(--shadow-lg);
+        border-color: var(--accent) !important;
+      }
+      
+      .noise-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        background: rgba(244, 63, 94, 0.1);
+        color: var(--noise);
+        border: 1px solid rgba(244, 63, 94, 0.2);
+        padding: 4px 10px;
+        border-radius: 20px;
+        font-size: 0.75rem;
+        margin: 4px;
+        transition: all 0.2s;
+      }
+      .noise-chip:hover {
+        background: rgba(244, 63, 94, 0.2);
+        border-color: var(--noise);
+      }
+      .noise-chip-close {
+        cursor: pointer;
+        opacity: 0.5;
+        font-size: 1rem;
+        line-height: 1;
+      }
+      .noise-chip-close:hover {
+        opacity: 1;
+      }
+
+      .action-btns {
+          opacity: 0.4;
+          transition: opacity 0.2s;
+      }
+      .expand-btn {
+          background: rgba(255,255,255,0.05);
+          border: 1px solid rgba(255,255,255,0.1);
+          color: var(--muted);
+          transition: all 0.2s;
+      }
+      .expand-btn:hover {
+          background: rgba(255,255,255,0.1);
+          color: var(--text);
+          border-color: rgba(255,255,255,0.2);
+      }
+      .category-node:hover > .action-btns,
+      .entity-card:hover .action-btns,
+      .keyword-card:hover .action-btns {
+          opacity: 1;
+      }
+      
+      .tree-guide {
+          position: absolute;
+          left: -10px;
+          top: 0;
+          bottom: 0;
+          width: 2px;
+          background: var(--border);
+          opacity: 0.3;
+      }
+      /* ─── Sidebar Layout ────────────────── */
+      .manager-container {
+        display: flex;
+        height: calc(100vh - 120px);
+        gap: 0;
+        overflow: hidden;
+      }
+      .sidebar {
+        width: 240px;
+        background: var(--surface);
+        border-right: 1px solid var(--border);
+        display: flex;
+        flex-direction: column;
+        padding: 20px 0;
+        flex-shrink: 0;
+      }
+      .sidebar-item {
+        padding: 12px 24px;
+        cursor: pointer;
+        color: var(--muted);
+        font-size: 0.9rem;
+        font-weight: 500;
+        transition: all 0.2s;
+        border-left: 3px solid transparent;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+      .sidebar-item:hover {
+        background: rgba(255, 255, 255, 0.03);
+        color: var(--text);
+      }
+      .sidebar-item.active {
+        background: rgba(37, 99, 235, 0.08);
+        color: var,--accent;
+        border-left-color: var(--accent);
+      }
+      .content-area {
+        flex: 1;
+        padding: 30px;
+        overflow-y: auto;
+        background: var(--bg);
+        position: relative;
+      }
+      .fade-in {
+        animation: fadeIn 0.3s ease-out;
+      }
+      @keyframes fadeIn {
+        from { opacity: 0; transform: translateY(10px); }
+        to { opacity: 1; transform: translateY(0); }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="header">
+      <h1 class="header-title-box">🔬 P1.5 分拣工具</h1>
+      <div class="search-box">
+        <input
+          id="searchInput"
+          type="text"
+          placeholder="搜索候选词..."
+          oninput="onSearch()"
+        />
+      </div>
+      <div class="stats" id="statsText">加载中...</div>
+      
+      <div class="tabs" style="display: flex; gap: 4px; background: var(--bg); padding: 4px; border-radius: 8px;">
+        <button class="btn btn-secondary tab-link active" onclick="switchTab('sorter')">📥 分拣池</button>
+        <button class="btn btn-secondary tab-link" onclick="switchTab('manager')">⚙️ 类目管理</button>
+      </div>
+
+      <div class="toolbar" id="sorterToolbar">
+        <select id="activeCategory" class="pop-input" style="height: 34px; padding: 0 10px; min-width: 100px;">
+          <option value="未分类">未分类</option>
+        </select>
+        <button class="btn btn-secondary" onclick="batchDecide('tag')">
+          ✅ 页面设为 TAG
+        </button>
+        <button class="btn btn-secondary" onclick="batchDecide('noise')">
+          🚫 页面设为 NOISE
+        </button>
+        <div class="toolbar-sep">|</div>
+        <select id="sortSelect" class="pop-input" style="height: 34px; padding: 0 10px;" onchange="changeSort()">
+          <option value="default">默认排序</option>
+          <option value="freq">按频次 (高→低)</option>
+          <option value="ascii">按名称 (A→Z)</option>
+        </select>
+      </div>
+      <div class="toolbar hidden" id="managerToolbar">
+        <button class="btn btn-primary" onclick="runP2P3()" style="display:flex;align-items:center;gap:8px;">🔬 打标并生成 tags (P2 → P3)</button>
+        <button class="btn btn-secondary" onclick="tagBack()" style="background:#4b5563;color:#fff;">🔙 Tag Back (重新打标)</button>
+        <button class="btn btn-secondary" onclick="openProgressPanel()" style="margin-left:8px;">查看流水线进度</button>
+      </div>
+    </div>
+
+      <div id="sorterView">
+        <!-- 决策统计条 -->
+        <div class="summary-bar">
+          <div class="summary-item">
+            <div class="dot creator"></div>
+            <span id="cnt_creator">0 Creator</span>
+          </div>
+          <div class="summary-item">
+            <div class="dot actor"></div>
+            <span id="cnt_actor">0 女M / 模特</span>
+          </div>
+          <div class="summary-item">
+            <div class="dot tag"></div>
+            <span id="cnt_tag">0 Tag</span>
+          </div>
+          <div class="summary-item">
+            <div class="dot noise"></div>
+            <span id="cnt_noise">0 Noise</span>
+          </div>
+          <span
+            style="color: var(--muted); font-size: 0.8rem"
+            id="cnt_undecided"
+          ></span>
+          <button
+            class="btn btn-secondary"
+            id="saveBtn"
+            onclick="commitAll(true)"
+            disabled
+            style="background: #4a4a4a; display: flex; align-items: center; gap: 8px;"
+          >
+            💾 暂存已勾选 (不打标)
+          </button>
+          <button
+            class="btn btn-primary commit-btn"
+            id="commitBtn"
+            onclick="commitAll(false)"
+            disabled
+            style="display: flex; align-items: center; gap: 8px;"
+          >
+            📤 确认并开始打标 (P2 → P3)
+          </button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th style="width: 40px" class="center">#</th>
+                <th>候选词 / 样本</th>
+                <th style="width: 100px">出现频次</th>
+                <th style="width: 100px">来源类型</th>
+                <th style="width: 80px" class="center">CREATOR</th>
+                <th style="width: 80px" class="center">ACTOR</th>
+                <th style="width: 100px" class="center">TAG</th>
+                <th style="width: 80px" class="center">NOISE</th>
+              </tr>
+            </thead>
+            <tbody id="tableBody">
+              <!-- JS 动态渲染 -->
+            </tbody>
+          </table>
+        </div>
+
+        <div class="pagination" id="pagination"></div>
+      </div>
+
+      <!-- 类目管理视图 [NEW SIDEBAR LAYOUT] -->
+      <div id="managerView" class="hidden" style="margin: -20px;">
+        <div class="manager-container">
+          <div class="sidebar">
+            <div class="sidebar-item active" onclick="switchManagerSection('creators', this)">🏗️ 创作者</div>
+            <div class="sidebar-item" onclick="switchManagerSection('actors', this)">👯 女M / 模特</div>
+            <div class="sidebar-item" onclick="switchManagerSection('tags', this)">🏷️ 标签分类</div>
+            <div class="sidebar-item" onclick="switchManagerSection('noise', this)">🚫 噪声词</div>
+          </div>
+          <div class="content-area" id="managerContent">
+            <!-- 动态渲染内容 -->
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="progress-panel hidden" id="progressPanel">
+      <div class="progress-header">
+        <span>🚀 流水线任务进度</span>
+        <span class="close-progress" onclick="closeProgressPanel()">✕</span>
+      </div>
+      <div id="progressLogs"></div>
+    </div>
+
+    <script>
+      // ─── 状态 ──────────────────────────────────────────────────
+      let allDecisions = {}; // word -> [] of categories
+      let currentPage = 1;
+      let totalPages = 1;
+      let totalItems = 0;
+      let pageSize = 50;
+      let searchQ = "";
+      let debounceTimer = null;
+      // availableCategories 在下方定义
+
+      // ─── 初始化 ────────────────────────────────────────────────
+      async function init() {
+        try {
+          const ctrl = new AbortController();
+          const t = setTimeout(() => ctrl.abort(), 10000);
+          const cfg = await fetch("/api/config", { signal: ctrl.signal }).then((r) => r.json());
+          clearTimeout(t);
+          document.title = `🔬 分拣工具 · ${cfg.bot}`;
+          if (cfg.categories) {
+             availableCategories = cfg.categories;
+             updateCategoryPickers();
+          }
+          
+          // Handle URL parameter view=manager
+          const params = new URLSearchParams(window.location.search);
+          if (params.get('view') === 'manager') {
+              switchTab('manager');
+          } else {
+              loadPage(1);
+          }
+        } catch (e) {
+          document.getElementById("tableBody").innerHTML =
+            '<tr><td colspan="8" style="text-align:center;padding:40px;color:#ff6b6b">' +
+            '❌ 加载失败：' + e.message + '<br><br>' +
+            '<button onclick="init()" style="padding:8px 20px;border-radius:8px;border:none;background:#7c5cfc;color:#fff;cursor:pointer">重试</button>' +
+            '</td></tr>';
+        }
+      }
+
+      async function loadPage(page) {
+        currentPage = page;
+        const sort = document.getElementById("sortSelect")?.value || "default";
+        const url =
+          `/api/candidates?page=${page}&page_size=${pageSize}&sort=${sort}` +
+          (searchQ ? `&q=${encodeURIComponent(searchQ)}` : "");
+        try {
+          const ctrl = new AbortController();
+          const t = setTimeout(() => ctrl.abort(), 15000);
+          const data = await fetch(url, { signal: ctrl.signal }).then((r) => r.json());
+          clearTimeout(t);
+
+          totalItems = data.total;
+          totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
+
+          renderTable(data.data, (page - 1) * pageSize);
+          renderPagination();
+          updateStats(data.total);
+          updateSummary();
+        } catch (e) {
+          document.getElementById("tableBody").innerHTML =
+            '<tr><td colspan="8" style="text-align:center;padding:40px;color:#ff6b6b">' +
+            '❌ 数据加载失败：' + e.message + '<br><br>' +
+            '<button onclick="loadPage(' + page + ')" style="padding:8px 20px;border-radius:8px;border:none;background:#7c5cfc;color:#fff;cursor:pointer">重试</button>' +
+            '</td></tr>';
+        }
+      }
+
+      function renderTable(rows, offset) {
+        const tbody = document.getElementById("tableBody");
+        if (!rows.length) {
+          tbody.innerHTML =
+            '<tr><td colspan="8" style="text-align:center;padding:40px;color:var(--muted)">无候选词</td></tr>';
+          return;
+        }
+        tbody.innerHTML = rows
+          .map((item, i) => {
+            if (!allDecisions[item.word]) {
+              allDecisions[item.word] = {
+                cats: item.decided || [],
+                category: item.category || "未分类"
+              };
+            }
+            const d = allDecisions[item.word];
+            const hasDecision = d.cats.length > 0;
+            const types = item.types
+              .split("/")
+              .map((t) => `<span class="source-badge">${t}</span>`)
+              .join(" ");
+            const uid = `s_${offset + i}`;
+            return `
+      <tr data-word="${escHtml(item.word)}" class="${hasDecision ? "decided" : ""}">
+        <td class="count">${offset + i + 1}</td>
+        <td>
+          <span class="word">${escHtml(item.word)}</span>
+          <button class="expand-btn" onclick="toggleSamples(this, '${uid}')" title="查看原文">▶ 原文</button>
+        </td>
+        <td class="count">${item.count.toLocaleString()}</td>
+        <td>${types}</td>
+        ${["creator", "actor", "tag", "noise"]
+          .map(
+            (cat) => {
+              if (cat === 'tag') {
+                const currentCat = allDecisions[item.word]?.category || item.category || "未分类";
+                return `
+                   <td class="center">
+                    <div class="cat-tag-wrap">
+                      <button class="cb-btn tag ${d.cats.includes('tag') ? 'active' : ''}" 
+                        onclick="toggleCat(this, 'tag')">T</button>
+                      <span class="cat-label" onclick="showTagPicker(this, event)" title="${d.category}">${d.category}</span>
+                    </div>
+                  </td>
+                `;
+              }
+              return `
+                <td class="center">
+                  <div class="cb-group">
+                    <button class="cb-btn ${cat} ${d.cats.includes(cat) ? "active" : ""}"
+                      onclick="toggleCat(this, '${cat}')">
+                      ${{ creator: "C", actor: "A", noise: "N" }[cat]}
+                    </button>
+                  </div>
+                </td>
+              `;
+            }
+          )
+          .join("")}
+      </tr>
+      <tr class="sample-row" id="${uid}">
+        <td colspan="8">
+          <div class="sample-loading">点击"原文"按钮加载...</div>
+        </td>
+      </tr>`;
+          })
+          .join("");
+      }
+
+      let availableCategories = ["未分类"];
+      let activePicker = null;
+
+      function toggleCat(btn, cat, options = {}) {
+        const row = btn.closest("tr");
+        const word = row.dataset.word;
+        if (!allDecisions[word]) {
+           allDecisions[word] = { 
+             cats: [], 
+             category: "未分类" 
+           };
+        }
+        const d = allDecisions[word];
+
+        if (cat === "noise") {
+          if (d.cats.includes("noise")) {
+            d.cats = [];
+          } else {
+            d.cats = ["noise"];
+          }
+        } else {
+          // 非 Noise
+          const wasNoise = d.cats.includes("noise");
+          if (wasNoise) d.cats = [];
+          
+          if (cat === 'tag' && options.category) {
+            d.category = options.category;
+            if (!d.cats.includes('tag')) {
+                d.cats.push('tag');
+            }
+          } else {
+            const idx = d.cats.indexOf(cat);
+            if (idx >= 0) {
+              d.cats.splice(idx, 1);
+            } else {
+              if (cat === 'noise') d.cats = ['noise'];
+              else d.cats.push(cat);
+            }
+          }
+        }
+
+        // UI 更新
+        updateRowUI(row, word);
+        
+        // 保存
+        fetch("/api/decide", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ 
+            word, 
+            decided: d.cats, 
+            category: d.category 
+          }),
+        });
+        updateSummary();
+      }
+
+      function updateRowUI(row, word) {
+        const d = allDecisions[word];
+        const cats = ["creator", "actor", "tag", "noise"];
+        const btns = row.querySelectorAll(".cb-btn");
+
+        btns.forEach((b) => {
+          const type = cats.find(c => b.classList.contains(c));
+          b.classList.toggle("active", d.cats.includes(type));
+        });
+        
+        const catLabel = row.querySelector(".cat-label");
+        if (catLabel) catLabel.textContent = d.category;
+        
+        row.classList.toggle("decided", d.cats.length > 0);
+      }
+
+      function showTagPicker(el, e) {
+        e.stopPropagation();
+        if (activePicker) activePicker.remove();
+        
+        const row = el.closest("tr");
+        const word = row.dataset.word;
+        const currentData = allDecisions[word] || { cats: [], category: "未分类" };
+        
+        const picker = document.createElement('div');
+        picker.className = 'popover open';
+        picker.style.left = (e.pageX - 60) + "px";
+        picker.style.top = (e.pageY + 10) + "px";
+        
+        let html = availableCategories.map(c => 
+          `<div class="pop-item ${currentData.category === c ? 'active' : ''}" onclick="pickCategory('${word}', '${c}')">${c}</div>`
+        ).join('');
+        
+        html += `<div class="pop-divider"></div>`;
+        html += `<input type="text" class="pop-input" placeholder="+ 新分类..." onkeyup="if(event.key==='Enter') pickCategory('${word}', this.value)">`;
+        
+        picker.innerHTML = html;
+        document.body.appendChild(picker);
+        activePicker = picker;
+        
+        // 点击外部关闭
+        const closer = () => {
+          picker.remove();
+          document.removeEventListener('click', closer);
+          activePicker = null;
+        };
+        setTimeout(() => document.addEventListener('click', closer), 10);
+      }
+
+      function pickCategory(word, cat) {
+        const row = document.querySelector(`tr[data-word="${escHtml(word)}"]`);
+        const btn = row.querySelector(".cb-btn.tag");
+        
+        // 标记为 TAG
+        if (!allDecisions[word]) {
+            allDecisions[word] = { cats: [], category: "未分类" };
+        }
+        
+        // 直接调用 toggleCat，由其内部处理 cats.push('tag') 和变色
+        toggleCat(btn, 'tag', { category: cat });
+        if (activePicker) activePicker.remove();
+      }
+
+      function updateCategoryPickers() {
+        const select = document.getElementById("activeCategory");
+        const val = select.value;
+        select.innerHTML = availableCategories.map(c => `<option value="${c}">${c}</option>`).join('');
+        select.value = val;
+      }
+
+      // ─── 展开/收起原文样本 ───────────────────────────────
+      async function toggleSamples(btn, rowId) {
+        const sampleRow = document.getElementById(rowId);
+        const isOpen = sampleRow.classList.contains("open");
+
+        if (isOpen) {
+          sampleRow.classList.remove("open");
+          btn.classList.remove("open");
+          btn.textContent = "▶ 原文";
+          return;
+        }
+
+        // 展开
+        sampleRow.classList.add("open");
+        btn.classList.add("open");
+        btn.textContent = "▼ 收起";
+
+        // 如果已加载过则不重新请求
+        if (sampleRow.dataset.loaded) return;
+
+        const word = btn.closest("tr").dataset.word;
+        const td = sampleRow.querySelector("td");
+        td.innerHTML = '<div class="sample-loading">⏳ 加载中...</div>';
+
+        try {
+          const res = await fetch(
+            `/api/samples?word=${encodeURIComponent(word)}`,
+          ).then((r) => r.json());
+
+          if (!res.samples || res.samples.length === 0) {
+            td.innerHTML =
+              '<div class="sample-loading">暂无原文样本（需运行正式更新生成）</div>';
+          } else {
+            td.innerHTML = `<ul class="sample-list">${res.samples
+              .map(
+                (s, j) =>
+                  `<li><em>#${j + 1}</em> ${escHtml(s)}</li>`,
+              )
+              .join("")}</ul>`;
+          }
+          sampleRow.dataset.loaded = "1";
+        } catch (e) {
+          td.innerHTML =
+            '<div class="sample-loading" style="color:var(--noise)">❌ 加载失败</div>';
+        }
+      }
+
+      async function batchDecide(cat) {
+        const url = `/api/candidates?page=${currentPage}&page_size=${pageSize}` + (searchQ ? `&q=${encodeURIComponent(searchQ)}` : "");
+        const data = await fetch(url).then((r) => r.json());
+        const words = data.data.map((d) => d.word);
+        
+        const category = document.getElementById("activeCategory").value;
+        const decided = cat ? [cat] : [];
+
+        for (const w of words) {
+           if (!allDecisions[w]) allDecisions[w] = { cats: [], category: "未分类" };
+           allDecisions[w].cats = decided;
+           if (cat === 'tag') allDecisions[w].category = category;
+        }
+
+        await fetch("/api/batch_decide", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ 
+             words, 
+             decided,
+             category: cat === 'tag' ? category : "未分类"
+          }),
+        });
+
+        renderTable(data.data, (currentPage - 1) * pageSize);
+        updateSummary();
+      }
+
+      function updateSummary() {
+        const counts = {
+          creator: 0,
+          actor: 0,
+          tag: 0,
+          noise: 0,
+          total: 0,
+          undecided: 0,
+        };
+        for (const [w, data] of Object.entries(allDecisions)) {
+          const cats = data.cats || [];
+          if (cats.length === 0) {
+            counts.undecided++;
+            continue;
+          }
+          cats.forEach((c) => {
+            if (c in counts) counts[c]++;
+          });
+          counts.total++;
+        }
+        document.getElementById("cnt_creator").textContent =
+          `${counts.creator} Creator`;
+        document.getElementById("cnt_actor").textContent =
+          `${counts.actor} 女M / 模特`;
+        document.getElementById("cnt_tag").textContent = `${counts.tag} Tag`;
+        document.getElementById("cnt_noise").textContent =
+          `${counts.noise} Noise`;
+        document.getElementById("cnt_undecided").textContent =
+          `未分拣: ${counts.undecided} 词`;
+        
+        const committed = counts.total > 0;
+        document.getElementById("commitBtn").disabled = !committed;
+        if (document.getElementById("saveBtn")) {
+            document.getElementById("saveBtn").disabled = !committed;
+        }
+      }
+
+      async function commitAll(isPartial = false) {
+        const decided = Object.fromEntries(
+          Object.entries(allDecisions).filter(([_, data]) => data.cats.length > 0),
+        );
+        const cnt = Object.keys(decided).length;
+        if (!cnt) {
+          alert("请先对词条进行分类勾选。");
+          return;
+        }
+
+        const msg = isPartial 
+          ? `确认将 ${cnt} 个词条同步到词库并从候选池删除？\n\n注意：此操作不会触发 P2 打标，适合分批分拣。`
+          : `确认将 ${cnt} 个词条同步到词库并执行全量打标？\n\n流程：sync → cleanup → P2 → P3`;
+        
+        if (!confirm(msg)) return;
+
+        const mainBtn = isPartial ? document.getElementById("saveBtn") : document.getElementById("commitBtn");
+        const otherBtn = isPartial ? document.getElementById("commitBtn") : document.getElementById("saveBtn");
+        
+        mainBtn.disabled = true;
+        if (otherBtn) otherBtn.disabled = true;
+        mainBtn.textContent = "⏳ 执行中...";
+
+        const res = await fetch(`/api/commit${isPartial ? '?partial=1' : ''}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        }).then((r) => r.json());
+
+        if (!res.ok) {
+          alert("提交失败: " + res.error);
+          mainBtn.disabled = false;
+          if (otherBtn) otherBtn.disabled = false;
+          mainBtn.textContent = isPartial ? "💾 暂存已勾选 (不打标)" : "📤 确认并开始打标 (P2 → P3)";
+          return;
+        }
+
+        // 显示进度面板并订阅聚合 SSE（支持 run_id 去重）
+        openProgressPanel();
+        subscribeProgressSSE();
+        
+        // 清理当前选择状态以便下一批操作
+        allDecisions = {};
+        if (isPartial) {
+            setTimeout(() => {
+                mainBtn.disabled = false;
+                if (otherBtn) otherBtn.disabled = false;
+                mainBtn.textContent = "💾 暂存成功";
+                loadPage(currentPage);
+            }, 1000);
+        }
+      }
+
+      function renderPagination() {
+        const el = document.getElementById("pagination");
+        const pages = [];
+        const delta = 3;
+        for (let i = 1; i <= totalPages; i++) {
+          if (i === 1 || i === totalPages || Math.abs(i - currentPage) <= delta)
+            pages.push(i);
+          else if (pages[pages.length - 1] !== "...") pages.push("...");
+        }
+        el.innerHTML = [
+          `<button class="page-btn" onclick="loadPage(${currentPage - 1})" ${currentPage <= 1 ? "disabled" : ""}>‹</button>`,
+          ...pages.map((p) =>
+            p === "..."
+              ? `<span style="color:var(--muted);padding:0 4px">…</span>`
+              : `<button class="page-btn ${p === currentPage ? "active" : ""}" onclick="loadPage(${p})">${p}</button>`,
+          ),
+          `<button class="page-btn" onclick="loadPage(${currentPage + 1})" ${currentPage >= totalPages ? "disabled" : ""}>›</button>`,
+        ].join("");
+      }
+
+      function updateStats(filtered) {
+        document.getElementById("statsText").textContent =
+          `共 ${filtered.toLocaleString()} 条候选词 | 第 ${currentPage}/${totalPages} 页`;
+      }
+
+      function onSearch() {
+        clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(() => {
+          searchQ = document.getElementById("searchInput").value.trim().toLowerCase();
+          const managerV = document.getElementById('managerView');
+          if (!managerV.classList.contains('hidden')) {
+              renderSectionHtml(currentManagerSection);
+          } else {
+              loadPage(1);
+          }
+        }, 300);
+      }
+
+      function changeSort() {
+        currentPage = 1;
+        loadPage(1);
+      }
+
+      async function tagBack() {
+        // 获取选中的词（在管理页面，我们假设用户可能想针对某些分类进行操作，
+        // 但目前的管理页面没有复选框，所以我们先实现一个针对当前搜索结果或当前分类全部“回滚”的功能，
+        // 或者弹窗让用户输入。这里为了演示，我们先实现针对当前视图中选定词（如果支持多选）的功能。）
+        // 鉴于用户需求，通常是“错误分类了，想退回”。
+        const word = prompt("请输入要退回候选池并重新打标的关键词（多个请用逗号分隔）:");
+        if (!word) return;
+        const words = word.split(',').map(w => w.trim()).filter(w => w);
+        if (words.length === 0) return;
+
+        if (!confirm(`确认将这 ${words.length} 个词从词库移除并重新打标？`)) return;
+
+        const res = await fetch('/api/tag_back', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ words })
+        }).then(r => r.json());
+
+        if (res.ok) {
+           alert(`成功退回 ${res.removed} 个词。请稍后查看打标结果。`);
+           loadEntityManager();
+        } else alert(res.error || '操作失败');
+      }
+
+      function escHtml(str) {
+        if (!str) return "";
+        return String(str)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;");
+      }
+      // For embedding strings in onclick='fn("...")' single-quoted JS contexts
+      function escJs(str) {
+        if (!str) return "";
+        return String(str).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '\\"');
+      }
+
+      // 键盘翻页
+      document.addEventListener("keydown", (e) => {
+        if (e.target.tagName === "INPUT") return;
+        if (e.key === "ArrowRight" || e.key === "PageDown") {
+          if (currentPage < totalPages) loadPage(currentPage + 1);
+        }
+        if (e.key === "ArrowLeft" || e.key === "PageUp") {
+          if (currentPage > 1) loadPage(currentPage - 1);
+        }
+      });
+
+      // ─── 标签页切换 ──────────────────────────────────────────
+      function switchTab(tabId) {
+        localStorage.setItem('activeSorterTab', tabId);
+        const sorterV = document.getElementById('sorterView');
+        const managerV = document.getElementById('managerView');
+        const sorterT = document.getElementById('sorterToolbar');
+        const tabs = document.querySelectorAll('.tab-link');
+        
+        tabs.forEach(t => t.classList.remove('active'));
+        if (tabId === 'sorter') {
+            sorterV.classList.remove('hidden');
+            managerV.classList.add('hidden');
+      sorterT.classList.remove('hidden');
+      const managerT = document.getElementById('managerToolbar'); if (managerT) managerT.classList.add('hidden');
+            if (tabs[0]) tabs[0].classList.add('active');
+        } else {
+            sorterV.classList.add('hidden');
+            managerV.classList.remove('hidden');
+      sorterT.classList.add('hidden');
+      const managerT = document.getElementById('managerToolbar'); if (managerT) managerT.classList.remove('hidden');
+            if (tabs[1]) tabs[1].classList.add('active');
+            loadEntityManager();
+        }
+      }
+
+      // ─── 类目展开状态 ──────────────────────────────────────────
+      let expansionState = { "未分类": true }; // 默认展开根级
+      function toggleNode(path) {
+          // 如果是根节点且从未切换过，它的默认状态是 true
+          const isRoot = path.indexOf('/') === -1;
+          const currentlyExpanded = expansionState[path] !== undefined ? expansionState[path] : isRoot;
+          expansionState[path] = !currentlyExpanded;
+          loadEntityManager(); // 刷新 UI
+      }
+
+      // ─── 管理导航 ─────────────────────────────────────────────
+      let currentManagerSection = 'creators';
+      let lastEntitiesData = null;
+      let lastTreeData = null;
+
+      function switchManagerSection(section, el) {
+        currentManagerSection = section;
+        if (el) {
+          document.querySelectorAll('.sidebar-item').forEach(item => item.classList.remove('active'));
+          el.classList.add('active');
+        }
+        renderSectionHtml(section);
+      }
+
+      // ─── 类目管理逻辑 ──────────────────────────────────────────
+      async function loadEntityManager() {
+        const content = document.getElementById('managerContent');
+        if (!lastEntitiesData) {
+            content.innerHTML = '<div style="color: var(--muted); padding: 40px;">加载中...</div>';
+        }
+        try {
+          const res = await fetch('/api/entities').then(r => r.json());
+          if (res && res.keywords) {
+            lastEntitiesData = res;
+            
+            // 更新全局分类列表
+            availableCategories = Object.keys(lastEntitiesData.keywords).sort();
+            updateCategoryPickers();
+            
+            // 构建层级树关键词数据
+            const kwData = lastEntitiesData.keywords || {};
+            if (Array.isArray(kwData)) {
+                lastEntitiesData.keywords = { "未分类": kwData };
+            }
+            const cats = Object.keys(lastEntitiesData.keywords).sort();
+            const tree = {};
+            cats.forEach(cat => {
+              const parts = cat.split('/');
+              let current = tree;
+              parts.forEach((part, i) => {
+                if (!current[part]) {
+                   current[part] = { _items: [], _path: parts.slice(0, i+1).join('/') };
+                }
+                if (i === parts.length - 1) {
+                   current[part]._items = [...(lastEntitiesData.keywords[cat] || [])];
+                }
+                current = current[part];
+              });
+            });
+            
+            // 合并暂存数据
+            const staging = res.staging || [];
+            staging.forEach(st => {
+              const cat = st.category || '未分类';
+              const parts = cat.split('/');
+              let current = tree;
+              parts.forEach((part, i) => {
+                if (!current[part]) {
+                   current[part] = { _items: [], _path: parts.slice(0, i+1).join('/') };
+                }
+                if (i === parts.length - 1) {
+                   const exists = current[part]._items.some(it => (typeof it === 'object' ? it.name : it) === st.name);
+                   if (!exists) {
+                      current[part]._items.push(st);
+                   }
+                }
+                current = current[part];
+              });
+            });
+            
+            lastTreeData = tree;
+            renderSectionHtml(currentManagerSection);
+          }
+        } catch (e) {
+          content.innerHTML = `<div style="color: var(--noise);">加载失败: ${e.message}</div>`;
+        }
+      }
+
+      function runP2P3() {
+        if (!confirm('确定要按当前分拣结果写回 DB（P2）并生成 tags 文件（P3）吗？该操作会在后台运行。')) return;
+        fetch('/api/run_p2p3', { method: 'POST' })
+          .then(r => r.json().catch(() => ({ok: false, msg: '服务器响应异常'})))
+          .then(j => {
+            if (!j.ok) throw new Error(j.msg || '启动失败');
+            openProgressPanel();
+            subscribeProgressSSE();
+          })
+          .catch(e => alert(e.message));
+      }
+
+      function openProgressPanel() {
+        const panel = document.getElementById('progressPanel');
+        const logs = document.getElementById('progressLogs');
+        panel.classList.remove('hidden');
+        if (logs.innerHTML.trim() === '') {
+            logs.innerHTML = '<div style="color: var(--noise); padding: 8px;">🔄 正在连接流水线...</div>';
+        }
+        localStorage.setItem('progressPanelVisible', 'true');
+        subscribeProgressSSE();
+      }
+
+      function closeProgressPanel() {
+        document.getElementById('progressPanel').classList.add('hidden');
+        localStorage.setItem('progressPanelVisible', 'false');
+        if (progressES) {
+            try { progressES.close(); } catch(e){}
+            progressES = null;
+        }
+      }
+
+      let progressES = null;
+      let renderedReportIds = new Set(); // 记录已渲染的报告 ID
+
+      function subscribeProgressSSE() {
+        if (progressES) {
+          try { progressES.close(); } catch (e) {}
+        }
+        progressES = new EventSource('/api/progress');
+
+        const activeSteps = {};
+
+        progressES.onmessage = function(evt) {
+          try {
+            const obj = JSON.parse(evt.data);
+            const logs = document.getElementById('progressLogs');
+            
+            // 如果是初始化步骤，清理 UI（针对重连或新任务）
+            if (obj.step === 'init') {
+                logs.innerHTML = '';
+                for (let key in activeSteps) delete activeSteps[key];
+            }
+            
+            // 如果是总结报告
+            if (obj.report) {
+               // 【唯一性检查】如果这个 run_id 的报告已经渲染过了，直接跳过
+               if (obj.run_id && renderedReportIds.has(obj.run_id)) return;
+               if (obj.run_id) renderedReportIds.add(obj.run_id);
+
+               const rep = document.createElement('div');
+               rep.className = 'report-box';
+               
+               // Basic markdown parser for bold, inline code, and newlines
+               let parsedReport = obj.report
+                   .replace(/</g, '&lt;').replace(/>/g, '&gt;') // escape HTML
+                   .replace(/\*\*(.*?)\*\*/g, '<b>$1</b>')
+                   .replace(/`(.*?)`/g, '<code style="background: rgba(255,255,255,0.1); padding: 2px 4px; border-radius: 4px;">$1</code>')
+                   .replace(/\n/g, '<br>');
+               
+               rep.innerHTML = parsedReport;
+               logs.appendChild(rep);
+               logs.scrollTop = logs.scrollHeight;
+               return;
+            }
+
+            // 处理步骤进度
+            let row = activeSteps[obj.step];
+            if (!row) {
+                row = document.createElement('div');
+                row.className = 'progress-row';
+                logs.appendChild(row);
+                activeSteps[obj.step] = row;
+                
+                // 初次连接清理 "正在连接" 提示
+                if (logs.children[0] && logs.children[0].textContent.includes('正在连接')) {
+                    logs.removeChild(logs.children[0]);
+                }
+            }
+
+            let html = `<div style="display: flex; justify-content: space-between; font-size: 13px;">
+                <span style="color: ${obj.status === 'done' ? '#4ade80' : obj.status === 'error' ? '#f87171' : 'var(--accent)'}">${obj.msg || (obj.step + ' ' + obj.status)}</span>
+                ${obj.percent !== undefined ? `<span style="opacity: 0.6;">${obj.percent}%</span>` : ''}
+            </div>`;
+            
+            if (obj.percent !== undefined) {
+                html += `<div class="progress-bar-container"><div class="progress-bar-fill" style="width: ${obj.percent}%"></div></div>`;
+            }
+
+            if (obj.detailed_html) {
+                html += `<div style="margin-top: 8px; font-size: 12.5px; color: #cbd5e1; background: rgba(0,0,0,0.25); border: 1px solid rgba(255,255,255,0.05); padding: 10px 12px; border-radius: 6px; line-height: 1.6; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">${obj.detailed_html}</div>`;
+            }
+            
+            row.innerHTML = html;
+            logs.scrollTop = logs.scrollHeight;
+
+            if (obj.step === 'done' || obj.status === 'error') {
+               try { progressES.close(); } catch (e) {}
+            }
+          } catch (e) {
+            console.error(e);
+          }
+        };
+      }
+
+      function renderNode(node, name, depth = 0) {
+        const rawItems = node._items || [];
+        const items = Array.isArray(rawItems) ? rawItems : [];
+        const children = Object.keys(node).filter(k => !k.startsWith('_'));
+        const path = node._path;
+
+        function countAllItems(n) {
+          const ownItems = Array.isArray(n._items) ? n._items.length : 0;
+          const childKeys = Object.keys(n).filter(k => !k.startsWith('_'));
+          return ownItems + childKeys.reduce((sum, key) => sum + countAllItems(n[key]), 0);
+        }
+
+        const totalItemCount = countAllItems(node);
+
+        // 本地过滤逻辑
+        const filteredItems = items.filter(item => {
+            if (!searchQ) return true;
+            const itemName = (typeof item === 'object' ? item.name : item).toLowerCase();
+            const aliases = (item.aliases || []).join(' ').toLowerCase();
+            return itemName.includes(searchQ) || aliases.includes(searchQ);
+        });
+
+        // 递归检查子节点是否有匹配
+        function nodeHasMatch(n, nodeName) {
+            if (!searchQ) return true;
+            if (nodeName.toLowerCase().includes(searchQ)) return true;
+            const nItems = n._items || [];
+            const hasMatchedItem = nItems.some(it => {
+                const itName = (typeof it === 'object' ? it.name : it).toLowerCase();
+                const itAliases = (it.aliases || []).join(' ').toLowerCase();
+                return itName.includes(searchQ) || itAliases.includes(searchQ);
+            });
+            if (hasMatchedItem) return true;
+            const nChildren = Object.keys(n).filter(k => !k.startsWith('_'));
+            return nChildren.some(childKey => nodeHasMatch(n[childKey], childKey));
+        }
+
+        const filteredChildren = children.filter(child => nodeHasMatch(node[child], child));
+
+        // 如果没有内容匹配且不是搜索关键词本身，则隐藏
+        if (searchQ && filteredItems.length === 0 && filteredChildren.length === 0 && !name.toLowerCase().includes(searchQ)) {
+            return '';
+        }
+
+        // 修正展开逻辑：如果搜索匹配则强制展开，否则跟随用户状态（默认仅深度0即顶级节点展开）
+        const isExpanded = (searchQ && (filteredItems.length > 0 || filteredChildren.length > 0)) || 
+                          (expansionState[path] !== undefined ? expansionState[path] : (depth === 0));
+        
+        let html = `
+          <div class="category-node" style="margin-left: ${depth === 0 ? 0 : 24}px; padding-left: ${depth > 0 ? '16px' : '0'}; margin-top: 12px; position: relative;">
+            ${depth > 0 ? '<div class="tree-guide"></div>' : ''}
+            <div style="display: flex; align-items: center; justify-content: space-between; padding: 10px 0;">
+               <div style="display: flex; align-items: center; gap: 10px; cursor: pointer; user-select: none;" onclick="toggleNode('${path}')">
+                 <span style="font-size: 1.2rem; transition: transform 0.2s; transform: ${isExpanded ? 'rotate(0deg)' : 'rotate(-90deg)'};">${isExpanded ? '📂' : '📁'}</span>
+                 <h3 style="font-size: 0.95rem; color: ${depth === 0 ? 'var(--text)' : 'var(--muted)'}; font-weight: 700;">
+                   ${name} 
+                   <span class="batch-badge">${totalItemCount}</span>
+                 </h3>
+               </div>
+                <div class="action-btns" style="display: flex; gap: 8px; align-items: center;">
+                  <button class="expand-btn" title="添加子分类" style="font-size: 0.7rem; padding: 4px 10px; border-radius: 6px; cursor: pointer;" onclick="addCategory('${path}/')">📁+</button>
+                  <button class="expand-btn" title="注入新词" style="font-size: 0.7rem; padding: 4px 10px; border-radius: 6px; cursor: pointer;" onclick="addEntityDirectPrompt('tag', '${path}')">➕ 词</button>
+                  <button class="expand-btn" title="重命名" style="font-size: 0.7rem; padding: 4px 10px; border-radius: 6px; cursor: pointer;" onclick="renameCategory('${path}')">📝 改</button>
+                  ${path !== '未分类' ? `
+                     <select onchange="if(this.value) moveCategory('${path}', this.value)" style="background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15); color: #fff; font-size: 0.65rem; cursor: pointer; outline: none; border-radius: 6px; padding: 5px 8px; max-width: 100px; font-weight: 700; transition: all 0.2s;">
+                       <option value="" style="background: #1f2330;">📂 移至...</option>
+                       <option value="ROOT" style="background: #1f2330;">根目录 (Top)</option>
+                       ${availableCategories.filter(c => c !== path && !c.startsWith(path + "/")).map(c => `<option value="${c}" style="background: #1f2330;">${c}</option>`).join('')}
+                     </select>
+                     <button class="expand-btn" title="删除" style="color: #ff6b6b !important; font-size: 0.7rem; padding: 4px 10px; border-radius: 6px; cursor: pointer;" onclick="deleteCategory('${path}')">🗑️ 删</button>
+                  ` : ''}
+                </div>
+            </div>
+            
+            <div style="display: ${isExpanded ? 'block' : 'none'};">
+                <div style="display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 0; max-height: 500px; overflow-y: auto; align-content: flex-start;">
+                  ${filteredItems.map(item => {
+                    const itemName = (typeof item === 'object') ? item.name : item;
+                    const aliases = (typeof item === 'object' ? item.aliases || [] : []).join(', ');
+                    return `
+                      <div class="keyword-card" title="${aliases ? '别名: ' + aliases : ''}" style="display: flex; align-items: center; gap: 10px; color: ${item.is_staging ? '#3b82f6' : 'var(--tag)'}; box-shadow: var(--shadow); ${item.is_staging ? 'border-style: dashed; opacity: 0.8;' : ''}">
+                        <div style="display: flex; flex-direction: column; gap: 4px;">
+                          <span style="font-weight: 700; font-size: 0.85rem;">${escHtml(itemName)}</span>
+                          ${(typeof item === 'object' && item.aliases && item.aliases.length > 0) ? `<div style="display: flex; flex-wrap: wrap; gap: 4px;">
+                             ${item.aliases.map(a => `<span class="batch-badge" style="background: rgba(0,0,0,0.15); font-size: 0.6rem; padding: 1px 4px;">${escHtml(a)} <span onclick="removeAlias('tag', '${escJs(itemName)}', '${escJs(a)}', '${path}')" style="cursor:pointer; color:var(--noise); margin-left: 2px;">×</span></span>`).join('')}
+                          </div>` : ''}
+                        </div>
+                        <div class="action-btns" style="display: flex; gap: 6px; border-left: 1px solid var(--border); padding-left: 10px; margin-left: 6px;">
+                            <button onclick="addAliasPrompt('tag', '${escJs(path)}', '${escJs(itemName)}')" style="background:none; border:none; color:var(--muted); cursor:pointer; font-size: 0.7rem;" title="加别名">🏷️</button>
+                            <button onclick="mergeEntityPrompt('tag', '${escJs(itemName)}', '${escJs(path)}')" style="background:none; border:none; color:var(--muted); cursor:pointer; font-size: 0.7rem;" title="合并/归类">⚓</button>
+                            <button onclick="removeEntity('tag', '${escJs(itemName)}', '${escJs(path)}')" style="background:none; border:none; color:var(--noise); cursor:pointer; font-size: 0.7rem;" title="删除">🗑️</button>
+                            <select onchange="moveEntity('${escJs(itemName)}', '${escJs(path)}', this.value)" style="background: var(--bg); border: 1px solid var(--border); color: var(--muted); font-size: 0.65rem; cursor: pointer; outline: none; border-radius: 6px; padding: 2px 4px;">
+                              <option value="">移</option>
+                              ${(availableCategories || []).map(c => `<option value="${c}">${c}</option>`).join('')}
+                            </select>
+                        </div>
+                      </div>
+                    `;
+                  }).join('')}
+                </div>
+                <div class="sub-nodes">
+                  ${filteredChildren.sort().map(child => node[child] ? renderNode(node[child], child, depth + 1) : '').join('')}
+                </div>
+            </div>
+          </div>
+        `;
+        return html;
+      }
+
+      function renderSectionHtml(section) {
+        const container = document.getElementById('managerContent');
+        const entities = lastEntitiesData;
+        const tree = lastTreeData;
+        if (!entities) return;
+
+        let html = '';
+        if (section === 'creators') {
+            const filtered = (entities.creators || []).filter(e => {
+                if (!searchQ) return true;
+                const name = (e.name || e).toLowerCase();
+                const aliases = (e.aliases || []).join(' ').toLowerCase();
+                return name.includes(searchQ) || aliases.includes(searchQ);
+            });
+            html = `
+                <div class="fade-in">
+                    <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid var(--creator); margin-bottom: 20px; padding-bottom: 12px;">
+                        <h2 style="font-size: 1.1rem; color: var(--text); display: flex; align-items: center; gap: 12px;">
+                            <span style="font-size: 1.5rem;">🏗️</span> 创作者 (Creators)
+                        </h2>
+                        <button class="btn btn-primary" style="font-size: 0.8rem; padding: 6px 16px; border-radius: 20px; background: var(--accent);" onclick="addEntityDirectPrompt('creator')">➕ 手动增加</button>
+                    </div>
+                    <div class="entity-list-container">
+                        ${filtered.map(e => {
+                            const name = e.name || e;
+                            const aliases = e.aliases || [];
+                            return `
+                                <div class="entity-row">
+                                    <div class="entity-info">
+                                        <span class="entity-name" style="color: var(--creator);">${escHtml(name)}</span>
+                                    </div>
+                                    <div class="alias-scroll-area">
+                                        ${aliases.map(a => `
+                                            <span class="batch-badge" style="background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.1); font-size: 0.65rem; padding: 3px 8px; white-space: nowrap;">
+                                                ${escHtml(a)} 
+                                                <span onclick="removeAlias('creator', '${escJs(name)}', '${escJs(a)}')" style="cursor:pointer; color:var(--noise); font-weight:bold; margin-left:4px;" title="移除别名">×</span>
+                                            </span>
+                                        `).join('')}
+                                        <div onclick="addAliasPrompt('creator', '', '${escJs(name)}')" class="batch-badge" style="background: rgba(0,0,0,0.3); border: 1px dashed var(--muted); cursor: pointer; color: var(--muted); font-size: 0.65rem; padding: 3px 10px; white-space: nowrap;" title="添加别名">➕ 添加别名</div>
+                                    </div>
+                                    <div class="entity-actions">
+
+                                        <button onclick="mergeEntityPrompt('creator', '${escJs(name)}')" style="background:none; border:none; color:var(--muted); cursor:pointer; font-size: 0.85rem;" title="合并至此">⚓</button>
+                                        <button onclick="removeEntity('creator', '${escJs(name)}')" style="background:none; border:none; color:var(--noise); cursor:pointer; font-size: 0.8rem;" title="删除">🗑️</button>
+                                    </div>
+                                </div>
+                            `;
+                        }).join('')}
+                    </div>
+                </div>
+            `;
+        } else if (section === 'actors') {
+            const filtered = (entities.actors || []).filter(e => {
+                if (!searchQ) return true;
+                const name = (e.name || e).toLowerCase();
+                const aliases = (e.aliases || []).join(' ').toLowerCase();
+                return name.includes(searchQ) || aliases.includes(searchQ);
+            });
+            html = `
+                <div class="fade-in">
+                    <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid var(--actor); margin-bottom: 20px; padding-bottom: 12px;">
+                        <h2 style="font-size: 1.1rem; color: var(--text); display: flex; align-items: center; gap: 12px;">
+                            <span style="font-size: 1.5rem;">👯</span> 女M / 模特 (Models)
+                        </h2>
+                        <button class="btn btn-primary" style="font-size: 0.8rem; padding: 6px 16px; border-radius: 20px; background: var(--accent);" onclick="addEntityDirectPrompt('actor')">➕ 手动增加</button>
+                    </div>
+                    <div class="entity-list-container">
+                        ${filtered.map(e => {
+                            const name = e.name || e;
+                            const aliases = e.aliases || [];
+                            return `
+                                <div class="entity-row">
+                                    <div class="entity-info">
+                                        <span class="entity-name" style="color: var(--actor);">${escHtml(name)}</span>
+                                    </div>
+                                    <div class="alias-scroll-area">
+                                        ${aliases.map(a => `
+                                            <span class="batch-badge" style="background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.1); font-size: 0.65rem; padding: 3px 8px; white-space: nowrap;">
+                                                ${escHtml(a)} 
+                                                <span onclick="removeAlias('actor', '${escJs(name)}', '${escJs(a)}')" style="cursor:pointer; color:var(--noise); font-weight:bold; margin-left:4px;" title="移除别名">×</span>
+                                            </span>
+                                        `).join('')}
+                                        <div onclick="addAliasPrompt('actor', '', '${escJs(name)}')" class="batch-badge" style="background: rgba(0,0,0,0.3); border: 1px dashed var(--muted); cursor: pointer; color: var(--muted); font-size: 0.65rem; padding: 3px 10px; white-space: nowrap;" title="添加别名">➕ 添加别名</div>
+                                    </div>
+                                    <div class="entity-actions">
+                                        <button onclick="mergeEntityPrompt('actor', '${escJs(name)}')" style="background:none; border:none; color:var(--muted); cursor:pointer; font-size: 0.85rem;" title="合并至此">⚓</button>
+                                        <button onclick="removeEntity('actor', '${escJs(name)}')" style="background:none; border:none; color:var(--noise); cursor:pointer; font-size: 0.8rem;" title="删除">🗑️</button>
+                                    </div>
+                                </div>
+                            `;
+                        }).join('')}
+                    </div>
+                </div>
+            `;
+        } else if (section === 'tags') {
+            html = `
+                <div class="fade-in">
+                    <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid var(--tag); margin-bottom: 20px; padding-bottom: 12px;">
+                        <h2 style="font-size: 1.1rem; color: var(--text); display: flex; align-items: center; gap: 12px;">
+                            <span style="font-size: 1.5rem;">🏷️</span> 标签分类 (Tags)
+                        </h2>
+                        <button class="btn btn-primary" style="font-size: 0.8rem; padding: 6px 16px; border-radius: 20px; background: var(--accent);" onclick="addCategory()">➕ 新增分类路径</button>
+                    </div>
+                    <div>
+                        ${Object.keys(tree).sort().map(root => tree[root] ? renderNode(tree[root], root) : '').join('')}
+                    </div>
+                </div>
+            `;
+        } else if (section === 'noise') {
+            const filtered = (entities.noise || []).filter(e => {
+                if (!searchQ) return true;
+                return e.toLowerCase().includes(searchQ);
+            });
+            html = `
+                <div class="fade-in">
+                    <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid var(--noise); margin-bottom: 20px; padding-bottom: 12px;">
+                        <h2 style="font-size: 1.1rem; color: var(--text); display: flex; align-items: center; gap: 12px;">
+                            <span style="font-size: 1.5rem;">🚫</span> 噪声/拦截词 (Noise)
+                        </h2>
+                        <button class="btn btn-primary" style="font-size: 0.8rem; padding: 6px 16px; border-radius: 20px; background: var(--accent);" onclick="addEntityDirectPrompt('noise')">➕ 手动增加</button>
+                    </div>
+                    <div style="padding: 10px 0;">
+                        ${filtered.map(e => `
+                            <span class="noise-chip">
+                                ${escHtml(e)}
+                                <span class="noise-chip-close" onclick="removeEntity('noise', '${escJs(e)}')">×</span>
+                            </span>
+                        `).join('')}
+                    </div>
+                </div>
+            `;
+        }
+        container.innerHTML = html;
+      }
+
+      async function mergeEntityPrompt(type, primaryName, category = "") {
+        const targetName = prompt(`请输入要合并到 "${primaryName}" 的另一个实体名称:\n(合并后，该实体将被删除，且其名称和别名将全部转为 "${primaryName}" 的别名)`);
+        if (!targetName || targetName === primaryName) return;
+        
+        if (!confirm(`确认将 "${targetName}" 合并到 "${primaryName}"？此操作不可逆。`)) return;
+        
+        const res = await fetch('/api/entities/merge', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({type, primary_name: primaryName, to_merge_name: targetName, category})
+        }).then(r => r.json());
+        
+        if (res.ok) {
+           loadEntityManager();
+        } else alert(res.error || '合并失败');
+      }
+
+      async function moveCategory(oldPath, newParent) {
+        // newParent 为 "ROOT" 时传空字符串
+        const targetParent = newParent === 'ROOT' ? "" : newParent;
+        if (!confirm(`确认将分类 "${oldPath}" 及其子内容移动到 "${targetParent || '根目录'}" 下？`)) return;
+        
+        const res = await fetch('/api/categories/move', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({old_path: oldPath, new_parent: targetParent})
+        }).then(r => r.json());
+        
+        if (res.ok) {
+           loadEntityManager();
+        } else alert(res.error || '移动失败');
+      }
+
+      async function addCategory(basePath = "") {
+        const name = prompt("输入新类目名称:", basePath);
+        if (!name || name === basePath) return;
+        const res = await fetch('/api/categories/add', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({name})
+        }).then(r => r.json());
+        
+        if (res.ok) {
+           if (!availableCategories.includes(name)) {
+              availableCategories.push(name);
+              updateCategoryPickers();
+           }
+           loadEntityManager();
+        } else alert(res.error);
+      }
+
+      async function renameCategory(oldName) {
+        const newName = prompt(`将类目 "${oldName}" 重命名为:`, oldName);
+        if (!newName || newName === oldName) return;
+        const res = await fetch('/api/categories/rename', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({old_name: oldName, new_name: newName})
+        }).then(r => r.json());
+        if (res.ok) {
+           availableCategories = availableCategories.map(c => c === oldName ? newName : c);
+           updateCategoryPickers();
+           loadEntityManager();
+        } else alert(res.error);
+      }
+
+      async function deleteCategory(name) {
+        if (!confirm(`确认删除类目 "${name}"？内部的所有关键词将退回至 "未分类" 状态。`)) return;
+        const res = await fetch('/api/categories/delete', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({name})
+        }).then(r => r.json());
+        if (res.ok) {
+           availableCategories = availableCategories.filter(c => c !== name);
+           updateCategoryPickers();
+           loadEntityManager();
+        } else alert(res.error);
+      }
+
+      async function moveEntity(word, oldCat, newCat) {
+        if (!newCat || oldCat === newCat) return;
+        const res = await fetch('/api/entities/move', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({word, old_category: oldCat, new_category: newCat})
+        }).then(r => r.json());
+        if (res.ok) loadEntityManager();
+        else alert(res.error);
+      }
+
+      async function addEntityDirectPrompt(type, category = '未分类') {
+        const label = {creator: '创作者', actor: '女M / 模特', tag: 'Tag/关键词', noise: '噪声/拦截词'}[type];
+        const word = prompt(`手动向 [${label}]${type === 'tag' ? ` (${category})` : ''} 增加词汇:`);
+        if (!word) return;
+        
+        const res = await fetch('/api/entities/add_direct', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({word, type, category})
+        }).then(r => r.json());
+        
+        if (res.ok) loadEntityManager();
+        else alert(res.error);
+      }
+
+
+      async function addAliasPrompt(type, category, name) {
+        const alias = prompt(`请输入 "${name}" 的新别名:`);
+        if (!alias) return;
+        const res = await fetch('/api/entities/alias/add', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({type, name, alias, category})
+        }).then(r => r.json());
+        if (res.ok) {
+           loadEntityManager();
+        } else alert(res.error);
+      }
+
+      async function removeAlias(type, name, alias, category = "") {
+        if (!confirm(`确认删除别名 "${alias}"？`)) return;
+        const res = await fetch('/api/entities/alias/remove', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({type, name, alias, category})
+        }).then(r => r.json());
+        if (res.ok) {
+           loadEntityManager();
+        } else alert(res.error);
+      }
+
+      async function removeEntity(type, name, category = "") {
+        if (!confirm(`确认将 "${name}" 从词库中永久删除？${type === 'noise' ? '\n\n注：删除噪声词后，该词将重新回到候选池中。' : ''}`)) return;
+        const res = await fetch('/api/entities/remove', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({type, name, category})
+        }).then(r => r.json());
+        if (res.ok) {
+           loadEntityManager();
+           if (type === 'noise' && typeof loadCandidates === 'function') {
+               loadCandidates();
+           }
+        } else alert(res.error);
+      }
+
+      async function mergeEntityPrompt(type, name, category = "") {
+        const target = prompt(`将其他实体合并到 "${name}"。\n请输入要合并过来的实体名:`);
+        if (!target) return;
+        const res = await fetch('/api/entities/merge', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({type, primary_name: name, to_merge_name: target, category})
+        }).then(r => r.json());
+        if (res.ok) {
+          loadEntityManager();
+        } else alert(res.error);
+      }
+
+      // 最小拖拽实现（示例）
+      // 需将可拖元素添加 draggable="true" 并 data-word 属性
+      document.addEventListener('DOMContentLoaded', () => {
+        init();
+        
+        const savedTab = localStorage.getItem('activeSorterTab') || 'sorter';
+        switchTab(savedTab);
+        
+        if (localStorage.getItem('progressPanelVisible') === 'true') {
+            openProgressPanel();
+        }
+
+        let dragWord = null;
+        document.body.addEventListener('dragstart', (e) => {
+          const el = e.target;
+          if (el && el.dataset && el.dataset.word) {
+            dragWord = el.dataset.word;
+            e.dataTransfer.setData('text/plain', dragWord);
+          }
+        });
+        // 分类节点作为 drop target，需要有 data-cat 属性
+        document.body.addEventListener('dragover', (e) => { e.preventDefault(); });
+        document.body.addEventListener('drop', async (e) => {
+          e.preventDefault();
+          const target = e.target.closest('[data-cat]');
+          if (!target || !dragWord) return;
+          const newCat = target.dataset.cat; // 前端约定的分类路径
+          const oldCat = document.querySelector(`[data-word="${dragWord}"]`)?.dataset.cat || null;
+          try {
+            const res = await fetch('/api/entities/move', {
+              method: 'POST',
+              headers: {'Content-Type':'application/json'},
+              body: JSON.stringify({ word: dragWord, old_category: oldCat, new_category: newCat })
+            });
+            const j = await res.json();
+            if (j.ok) {
+              // 刷新页面局部或重新请求 /api/entities
+              location.reload();
+            } else {
+              alert('移动失败: ' + (j.error || '未知错误'));
+            }
+          } catch (err) {
+            alert('移动请求出错: ' + err.message);
+          } finally {
+            dragWord = null;
+          }
+        });
+      });
+    </script>
+  </body>
+</html>

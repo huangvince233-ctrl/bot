@@ -1,0 +1,561 @@
+{
+  "managed_folders_config": [
+    "极品捆绑",
+    "精品捆绑",
+    "整理"
+  ],
+  "folders": [
+    {
+      "name": "极品捆绑",
+      "is_managed": true,
+      "peers": [
+        {
+          "id": -1003323249740,
+          "active": false,
+          "seen_before": false,
+          "added": false
+        },
+        {
+          "id": -1003077564843,
+          "active": true,
+          "seen_before": false,
+          "added": true
+        },
+        {
+          "id": -1002974973326,
+          "active": true,
+          "seen_before": false,
+          "added": true
+        },
+        {
+          "id": -1002784674222,
+          "active": true,
+          "seen_before": false,
+          "added": true
+        },
+        {
+          "id": -1001927546930,
+          "active": true,
+          "seen_before": false,
+          "added": true
+        },
+        {
+          "id": -1001395222731,
+          "active": true,
+          "seen_before": false,
+          "added": true
+        }
+      ]
+    },
+    {
+      "name": "精品捆绑",
+      "is_managed": true,
+      "peers": [
+        {
+          "id": -1003111243075,
+          "active": true,
+          "seen_before": false,
+          "added": true
+        },
+        {
+          "id": -1003080296008,
+          "active": true,
+          "seen_before": false,
+          "added": true
+        },
+        {
+          "id": -1003074549125,
+          "active": true,
+          "seen_before": false,
+          "added": true
+        },
+        {
+          "id": -1003059133638,
+          "active": true,
+          "seen_before": false,
+          "added": true
+        },
+        {
+          "id": -1003023798330,
+          "active": true,
+          "seen_before": false,
+          "added": true
+        },
+        {
+          "id": -1002977568664,
+          "active": true,
+          "seen_before": false,
+          "added": true
+        },
+        {
+          "id": -1002975736992,
+          "active": true,
+          "seen_before": false,
+          "added": true
+        },
+        {
+          "id": -1002959466068,
+          "active": true,
+          "seen_before": false,
+          "added": true
+        },
+        {
+          "id": -1002943888604,
+          "active": true,
+          "seen_before": false,
+          "added": true
+        },
+        {
+          "id": -1002935185396,
+          "active": true,
+          "seen_before": false,
+          "added": true
+        },
+        {
+          "id": -1002919642039,
+          "active": true,
+          "seen_before": false,
+          "added": true
+        },
+        {
+          "id": -1002902375087,
+          "active": true,
+          "seen_before": false,
+          "added": true
+        },
+        {
+          "id": -1002900206135,
+          "active": true,
+          "seen_before": false,
+          "added": true
+        },
+        {
+          "id": -1002900188660,
+          "active": true,
+          "seen_before": false,
+          "added": true
+        },
+        {
+          "id": -1002884170895,
+          "active": true,
+          "seen_before": false,
+          "added": true
+        },
+        {
+          "id": -1002844263912,
+          "active": true,
+          "seen_before": false,
+          "added": true
+        },
+        {
+          "id": -1002829404994,
+          "active": true,
+          "seen_before": false,
+          "added": true
+        },
+        {
+          "id": -1002662690707,
+          "active": true,
+          "seen_before": false,
+          "added": true
+        },
+        {
+          "id": -1002480302932,
+          "active": true,
+          "seen_before": false,
+          "added": true
+        },
+        {
+          "id": -1002419230582,
+          "active": true,
+          "seen_before": false,
+          "added": true
+        },
+        {
+          "id": -1001978202573,
+          "active": true,
+          "seen_before": false,
+          "added": true
+        },
+        {
+          "id": -1001842629760,
+          "active": true,
+          "seen_before": false,
+          "added": true
+        },
+        {
+          "id": -1001610143657,
+          "active": true,
+          "seen_before": false,
+          "added": true
+        },
+        {
+          "id": -1003366119077,
+          "active": true,
+          "seen_before": false,
+          "added": true
+        },
+        {
+          "id": -1001776893520,
+          "active": true,
+          "seen_before": false,
+          "added": true
+        },
+        {
+          "id": -1001600553939,
+          "active": true,
+          "seen_before": false,
+          "added": true
+        },
+        {
+          "id": 5906736645,
+          "active": false,
+          "seen_before": false,
+          "added": false
+        }
+      ]
+    },
+    {
+      "name": "整理",
+      "is_managed": true,
+      "peers": [
+        {
+          "id": 6888675991,
+          "active": true,
+          "seen_before": false,
+          "added": true
+        },
+        {
+          "id": -4996462358,
+          "active": true,
+          "seen_before": false,
+          "added": true
+        },
+        {
+          "id": -5217210906,
+          "active": true,
+          "seen_before": false,
+          "added": true
+        },
+        {
+          "id": -5051247857,
+          "active": true,
+          "seen_before": false,
+          "added": true
+        },
+        {
+          "id": -5018259385,
+          "active": true,
+          "seen_before": false,
+          "added": true
+        },
+        {
+          "id": -5011841156,
+          "active": true,
+          "seen_before": false,
+          "added": true
+        },
+        {
+          "id": -5049390968,
+          "active": true,
+          "seen_before": false,
+          "added": true
+        },
+        {
+          "id": -5209651248,
+          "active": true,
+          "seen_before": false,
+          "added": true
+        }
+      ]
+    },
+    {
+      "name": "约/较少捆绑中精品",
+      "is_managed": false,
+      "peers": [
+        {
+          "id": -1003275924360,
+          "active": true,
+          "seen_before": false,
+          "added": false
+        },
+        {
+          "id": -1002938194287,
+          "active": true,
+          "seen_before": false,
+          "added": false
+        },
+        {
+          "id": -1002893892594,
+          "active": true,
+          "seen_before": false,
+          "added": false
+        },
+        {
+          "id": -1002455993982,
+          "active": true,
+          "seen_before": false,
+          "added": false
+        },
+        {
+          "id": -1002180896589,
+          "active": false,
+          "seen_before": false,
+          "added": false
+        },
+        {
+          "id": -1001467666723,
+          "active": true,
+          "seen_before": false,
+          "added": false
+        }
+      ]
+    },
+    {
+      "name": "较少捆绑AV/实拍/定制",
+      "is_managed": false,
+      "peers": [
+        {
+          "id": -1003095521266,
+          "active": true,
+          "seen_before": false,
+          "added": false
+        },
+        {
+          "id": -1003059497879,
+          "active": true,
+          "seen_before": false,
+          "added": false
+        },
+        {
+          "id": -1003009985000,
+          "active": true,
+          "seen_before": false,
+          "added": false
+        },
+        {
+          "id": -1003004096641,
+          "active": true,
+          "seen_before": false,
+          "added": false
+        },
+        {
+          "id": -1003054934331,
+          "active": true,
+          "seen_before": false,
+          "added": false
+        },
+        {
+          "id": -1002980371210,
+          "active": true,
+          "seen_before": false,
+          "added": false
+        },
+        {
+          "id": -1002917257713,
+          "active": true,
+          "seen_before": false,
+          "added": false
+        },
+        {
+          "id": -1002954864029,
+          "active": true,
+          "seen_before": false,
+          "added": false
+        },
+        {
+          "id": -1002903536866,
+          "active": true,
+          "seen_before": false,
+          "added": false
+        },
+        {
+          "id": -1002753780561,
+          "active": true,
+          "seen_before": false,
+          "added": false
+        },
+        {
+          "id": -1001985384825,
+          "active": true,
+          "seen_before": false,
+          "added": false
+        },
+        {
+          "id": -1001753099527,
+          "active": true,
+          "seen_before": false,
+          "added": false
+        },
+        {
+          "id": -1002131531682,
+          "active": true,
+          "seen_before": false,
+          "added": false
+        },
+        {
+          "id": -1001624296668,
+          "active": true,
+          "seen_before": false,
+          "added": false
+        },
+        {
+          "id": -1002802516509,
+          "active": true,
+          "seen_before": false,
+          "added": false
+        },
+        {
+          "id": -1002872203821,
+          "active": true,
+          "seen_before": false,
+          "added": false
+        },
+        {
+          "id": -1002722295224,
+          "active": true,
+          "seen_before": false,
+          "added": false
+        },
+        {
+          "id": -1002757241762,
+          "active": true,
+          "seen_before": false,
+          "added": false
+        },
+        {
+          "id": -1001902679312,
+          "active": true,
+          "seen_before": false,
+          "added": false
+        },
+        {
+          "id": -1001431325230,
+          "active": true,
+          "seen_before": false,
+          "added": false
+        },
+        {
+          "id": -1001245945922,
+          "active": true,
+          "seen_before": false,
+          "added": false
+        }
+      ]
+    },
+    {
+      "name": "bot/官频/私群/好友",
+      "is_managed": false,
+      "peers": [
+        {
+          "id": -1003879481780,
+          "active": true,
+          "seen_before": false,
+          "added": false
+        },
+        {
+          "id": -1003752126061,
+          "active": true,
+          "seen_before": false,
+          "added": false
+        },
+        {
+          "id": -1003730374079,
+          "active": true,
+          "seen_before": false,
+          "added": false
+        },
+        {
+          "id": -1001320622866,
+          "active": true,
+          "seen_before": false,
+          "added": false
+        },
+        {
+          "id": -1001224624669,
+          "active": true,
+          "seen_before": false,
+          "added": false
+        },
+        {
+          "id": -1001186921499,
+          "active": true,
+          "seen_before": false,
+          "added": false
+        },
+        {
+          "id": 777000,
+          "active": true,
+          "seen_before": false,
+          "added": false
+        },
+        {
+          "id": 52504489,
+          "active": true,
+          "seen_before": false,
+          "added": false
+        },
+        {
+          "id": 93372553,
+          "active": true,
+          "seen_before": false,
+          "added": false
+        },
+        {
+          "id": 8160601745,
+          "active": true,
+          "seen_before": false,
+          "added": false
+        },
+        {
+          "id": 8357473152,
+          "active": true,
+          "seen_before": false,
+          "added": false
+        },
+        {
+          "id": 8455670429,
+          "active": true,
+          "seen_before": false,
+          "added": false
+        },
+        {
+          "id": 8469926130,
+          "active": true,
+          "seen_before": false,
+          "added": false
+        },
+        {
+          "id": 8472899675,
+          "active": true,
+          "seen_before": false,
+          "added": false
+        }
+      ]
+    },
+    {
+      "name": "杂文件",
+      "is_managed": false,
+      "peers": [
+        {
+          "id": -1002994387750,
+          "active": true,
+          "seen_before": false,
+          "added": false
+        },
+        {
+          "id": -1002797634708,
+          "active": true,
+          "seen_before": false,
+          "added": false
+        },
+        {
+          "id": -1002781849423,
+          "active": true,
+          "seen_before": false,
+          "added": false
+        }
+      ]
+    }
+  ]
+}

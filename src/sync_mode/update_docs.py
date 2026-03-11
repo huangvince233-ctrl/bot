@@ -11,6 +11,7 @@ update_docs.py - 统一文档更新脚本
 import os
 import re
 import json
+import argparse
 from dotenv import load_dotenv
 import sqlite3
 import asyncio
@@ -40,6 +41,29 @@ API_ID = int(os.getenv('API_ID'))
 API_HASH = os.getenv('API_HASH')
 DB_PATH = 'data/copilot.db'
 
+# 全局文件缓存，减少 O(N) 循环中的 IO
+_metadata_cache = {}
+
+def get_metadata_cache(root_dir):
+    if root_dir in _metadata_cache:
+        return _metadata_cache[root_dir]
+    
+    cache = {}
+    if not os.path.exists(root_dir):
+        return cache
+        
+    for folder in os.listdir(root_dir):
+        f_path = os.path.join(root_dir, folder)
+        if os.path.isdir(f_path):
+            cache[folder] = set(os.listdir(f_path))
+    
+    _metadata_cache[root_dir] = cache
+    return cache
+
+def invalidate_metadata_cache():
+    global _metadata_cache
+    _metadata_cache = {}
+
 def safe_name(name):
     return re.sub(r'[<>:"/\\|?*]', '_', name).strip()
 
@@ -48,57 +72,55 @@ def format_range(ids):
     mi, ma = min(ids), max(ids)
     return f"#{mi}" if mi == ma else f"#{mi}-#{ma}"
 
-def move_metadata_files(chat_id, old_folder, new_folder, canonical_name):
+def enforce_metadata_paths(chat_id, target_folder, canonical_name):
     """
-    如果文件夹变动，移动 data/metadata 和 docs/metadata 下的对应文件
+    [NEW/FIX] 强制统一元数据和归档文件/文件夹到正确的 target_folder 下。
+    扫描预定义的根目录，如果发现 canonical_name 在错误的分类文件夹中，则移动它。
+    由于旧有的逻辑如果崩溃或只移动了部分，会导致残留，因此本函数采用“全局搜捕”式的修补机制。
+    返回移动过的原文件夹列表。
     """
-    safe_old = safe_name(old_folder)
-    safe_new = safe_name(new_folder)
+    safe_target = safe_name(target_folder)
     safe_c = safe_name(canonical_name)
-    
-    if safe_old == safe_new:
-        return
+    moved_from_dirs = set()
 
-    moved = False
-    
-    # 定义所有需要迁移的基础路径模式
-    # (基础根目录, 应用子目录)
-    # 模式 A: 文件迁移 (例如 data/metadata/Folder/File.json)
+    # 1. 处理文件 (JSON / MD)
     file_targets = [
         ('data', 'metadata', '.json'),
         ('docs', 'metadata', '.md')
     ]
-    
     for root, sub, ext in file_targets:
-        old_path = os.path.join(root, sub, safe_old, f"{safe_c}{ext}")
-        new_dir = os.path.join(root, sub, safe_new)
-        new_path = os.path.join(new_dir, f"{safe_c}{ext}")
+        base_dir = os.path.join(root, sub)
+        if not os.path.exists(base_dir): continue
+        target_name = f"{safe_c}{ext}"
         
-        if os.path.exists(old_path):
-            os.makedirs(new_dir, exist_ok=True)
-            try:
-                shutil.move(old_path, new_path)
-                print(f"  🚚 [Move File] {old_path} -> {new_path}")
-                moved = True
-                
-                # 额外逻辑：更新 JSON 内部的 folder 字段信息
-                if ext == '.json':
-                    try:
-                        with open(new_path, 'r', encoding='utf-8') as f_upd:
-                            data_upd = json.load(f_upd)
-                        data_upd['folder'] = new_folder
-                        with open(new_path, 'w', encoding='utf-8') as f_upd:
-                            json.dump(data_upd, f_upd, ensure_ascii=False, indent=4)
-                    except Exception as e:
-                        print(f"  ⚠️ [Update JSON Internal FAILED] {new_path}: {e}")
-            except Exception as e:
-                print(f"  ⚠️ [Move File FAILED] {old_path}: {e}")
-        else:
-            # print(f"  ℹ️ [Skip File] {old_path} (not exists)")
-            pass
+        for folder_name in os.listdir(base_dir):
+            if folder_name == safe_target: continue # 已经在目标位置，跳过
+            old_dir = os.path.join(base_dir, folder_name)
+            if not os.path.isdir(old_dir): continue
+            
+            old_path = os.path.join(old_dir, target_name)
+            if os.path.exists(old_path):
+                new_dir = os.path.join(base_dir, safe_target)
+                new_path = os.path.join(new_dir, target_name)
+                os.makedirs(new_dir, exist_ok=True)
+                try:
+                    shutil.move(old_path, new_path)
+                    print(f"  🚚 [Enforce File] {old_path} -> {new_path}")
+                    moved_from_dirs.add(folder_name)
+                    
+                    if ext == '.json':
+                        try:
+                            with open(new_path, 'r', encoding='utf-8') as f_upd:
+                                data_upd = json.load(f_upd)
+                            data_upd['folder'] = target_folder
+                            with open(new_path, 'w', encoding='utf-8') as f_upd:
+                                json.dump(data_upd, f_upd, ensure_ascii=False, indent=4)
+                        except Exception as e:
+                            print(f"  ⚠️ [Update JSON Internal FAILED] {new_path}: {e}")
+                except Exception as e:
+                    print(f"  ⚠️ [Move File FAILED] {old_path}: {e}")
 
-    # 模式 B: 目录迁移 (例如 docs/archived/logs/Folder/Channel/)
-    # 注意：这里的目录结构是 {root}/archived/{logs|backups}/{folder}/{channel}/
+    # 2. 处理归档目录 (logs / backups)
     dir_targets = [
         ('docs', 'archived', 'logs'),
         ('data', 'archived', 'logs'),
@@ -106,32 +128,58 @@ def move_metadata_files(chat_id, old_folder, new_folder, canonical_name):
         ('data', 'archived', 'backups')
     ]
     
-    for root, arch, sub in dir_targets:
-        old_dir = os.path.join(root, arch, sub, safe_old, safe_c)
-        new_parent_dir = os.path.join(root, arch, sub, safe_new)
-        new_dir = os.path.join(new_parent_dir, safe_c)
+    # 构建所有可能的老目录名匹配项
+    norm_id = str(chat_id)
+    if norm_id.startswith('-100'):
+        short_id = norm_id[4:]
+    elif norm_id.startswith('-'):
+        short_id = norm_id[1:]
+    else:
+        short_id = norm_id
         
-        if os.path.exists(old_dir) and os.path.isdir(old_dir):
-            os.makedirs(new_parent_dir, exist_ok=True)
-            try:
-                # 如果目标已存在（理论上不应该，除非脏数据），先合并或报错
-                if os.path.exists(new_dir):
-                    # 简单处理：如果已存在，则尝试合并内容或跳过
-                    print(f"  📂 [Dir Exists] Merging: {old_dir} -> {new_dir}")
-                    for item in os.listdir(old_dir):
-                        shutil.move(os.path.join(old_dir, item), os.path.join(new_dir, item))
-                    os.rmdir(old_dir)
-                else:
-                    shutil.move(old_dir, new_dir)
-                    print(f"  🚚 [Move Dir] {old_dir} -> {new_dir}")
-                moved = True
-            except Exception as e:
-                print(f"  ⚠️ [Move Dir FAILED] {old_dir}: {e}")
-        else:
-            # print(f"  ℹ️ [Skip Dir] {old_dir} (not exists)")
-            pass
-                
-    return moved
+    possible_dir_names = [
+        safe_c,
+        f"{safe_c}_{norm_id}",
+        f"{safe_c}_{short_id}",
+        f"{safe_c}_{abs(int(chat_id)) % 1000000000000}" 
+    ]
+    
+    for root, arch, sub in dir_targets:
+        base_dir = os.path.join(root, arch, sub)
+        if not os.path.exists(base_dir): continue
+        
+        for folder_name in os.listdir(base_dir):
+            if folder_name == safe_target: continue
+            
+            # [FIX] 兼容旧格式：只要是这几种名字，都当作此频道的历史文件夹处理
+            for cand_name in possible_dir_names:
+                old_dir = os.path.join(base_dir, folder_name, cand_name)
+                if os.path.exists(old_dir) and os.path.isdir(old_dir):
+                    new_parent_dir = os.path.join(base_dir, safe_target)
+                    new_dir = os.path.join(new_parent_dir, safe_c)  # 统一合并为标准新名
+                    os.makedirs(new_parent_dir, exist_ok=True)
+                    try:
+                        if os.path.exists(new_dir):
+                            print(f"  📂 [Dir Exists] Merging Old Format: {old_dir} -> {new_dir}")
+                            for item in os.listdir(old_dir):
+                                src_item = os.path.join(old_dir, item)
+                                dst_item = os.path.join(new_dir, item)
+                                if os.path.exists(dst_item):
+                                    if os.path.isdir(src_item):
+                                        shutil.rmtree(src_item)
+                                    else:
+                                        os.remove(src_item)
+                                else:
+                                    shutil.move(src_item, dst_item)
+                            os.rmdir(old_dir)
+                        else:
+                            shutil.move(old_dir, new_dir)
+                            print(f"  🚚 [Enforce Dir (Old Format)] {old_dir} -> {new_dir}")
+                        moved_from_dirs.add(folder_name)
+                    except Exception as e:
+                        print(f"  ⚠️ [Move Dir FAILED] {old_dir}: {e}")
+                    
+    return list(moved_from_dirs)
 
 def auto_organize_root():
     """
@@ -150,7 +198,8 @@ def auto_organize_root():
     # 核心黑名单：绝对不能移动的文件
     essential_files = {
         'search_bot.py', 'db.py', 'requirements.txt', 'README.md', '.env', 
-        '.gitignore', 'start_bot.bat', 'LICENSE'
+        '.gitignore', 'start_bot.bat', 'LICENSE',
+        'start_tgporncopilot.bat', 'start_my_porn_private_bot.bat'
     }
 
     # 1. 处理 Python 脚本
@@ -182,7 +231,7 @@ def auto_organize_root():
         except Exception as e:
             print(f"  ⚠️ [Organized Log FAILED] {f}: {e}")
 
-async def run_metadata_update(client=None, db_instance=None):
+async def run_metadata_update(client=None, db_instance=None, only_prepare=False, bot_name=None):
     """
     提供给外部（如 search_bot.py）调用的核心接口
     """
@@ -194,6 +243,11 @@ async def run_metadata_update(client=None, db_instance=None):
 
     # [NEW] 整理根目录
     auto_organize_root()
+    
+    # 如果仅准备环境，则到此为止
+    if only_prepare:
+        print("✅ 环境准备与整理完成。")
+        return
 
     should_disconnect = False
     if client is None:
@@ -224,6 +278,10 @@ async def run_metadata_update(client=None, db_instance=None):
                 return None
             
             is_bot = getattr(ent, 'bot', False)
+            # [NEW] 如果已退出频道或群组已停用，则不视为活跃对话，让清理逻辑将其转入历史存档
+            if getattr(ent, 'left', False) or getattr(ent, 'deactivated', False):
+                return None
+                
             is_official = (dialog.id == 777000)
             is_self = (dialog.id == my_id)
             is_channel = (dtype == 'Channel' and getattr(ent, 'broadcast', False))
@@ -307,9 +365,9 @@ async def run_metadata_update(client=None, db_instance=None):
                 try:
                     # 使用 get_entity 自动处理所有 Peer 类型 (User, Chat, Channel)
                     ent = await client.get_entity(peer)
-                    # [FIX] 必须使用 utils.get_peer_id 以获得带 -100 前缀的 Peer ID，否则无法匹配 all_dialogs
-                    from telethon import utils
-                    did = utils.get_peer_id(ent)
+                    # [FIX] 必须使用 telethon.utils.get_peer_id 以获得带 -100 前缀的 Peer ID，否则无法匹配 all_dialogs
+                    from telethon import utils as telethon_utils
+                    did = telethon_utils.get_peer_id(ent)
                     
                     # 如果全量列表里没有（例如已经退出频道），即便文件夹里有，也不强行补全
                     # 这样可以解决用户提到的“已删除频道仍然出现在列表”的问题
@@ -461,25 +519,12 @@ async def run_metadata_update(client=None, db_instance=None):
             # 存入数据库，锁定或更新 Canonical Name，这会自动修复任何 Telegram 上的改名
             old_title, canonical_title = db.check_and_update_channel_name(did, current_title)
             
-            # [Smart Move] 检查本地是否有存量元数据，且文件夹是否发生变动
-            # 逻辑：先找现存的 JSON
-            existing_folder = None
-            local_meta_root = os.path.join('data', 'metadata')
-            if os.path.exists(local_meta_root):
-                for f_dir in os.listdir(local_meta_root):
-                    potential_json = os.path.join(local_meta_root, f_dir, f"{safe_name(canonical_title)}.json")
-                    if os.path.exists(potential_json):
-                        try:
-                            with open(potential_json, 'r', encoding='utf-8') as f:
-                                mj = json.load(f)
-                                if mj.get('id') == did:
-                                    existing_folder = mj.get('folder')
-                                    break
-                        except: pass
-            
-            if existing_folder and existing_folder != folder_label:
-                if move_metadata_files(did, existing_folder, folder_label, canonical_title):
-                    report_moves.append((canonical_title, existing_folder, folder_label))
+            # [Smart Move / Self-Healing Enforce]
+            # 采用全新自愈逻辑：不再基于单一的 JSON 所在目录判定分组。
+            # 直接扫描所有归档库和元数据目录，发现残留和错置的记录，一律暴力合并与迁移到当前目标文件夹 label 之内。
+            moved_from_list = enforce_metadata_paths(did, folder_label, canonical_title)
+            for old_fold in moved_from_list:
+                report_moves.append((canonical_title, old_fold, folder_label))
 
             safe_f_name = safe_name(folder_label)
             safe_c_name = safe_name(canonical_title)
@@ -609,11 +654,15 @@ async def run_metadata_update(client=None, db_instance=None):
             if not os.path.exists(root_dir): return [], []
             deleted_names = []
             preserved_names = []
-            for folder_name in sorted(os.listdir(root_dir)):
+            
+            # 使用缓存进行遍历
+            meta_cache = get_metadata_cache(root_dir)
+            
+            for folder_name, files in meta_cache.items():
+                if folder_name == "关注列表": continue
                 f_path = os.path.join(root_dir, folder_name)
-                if not os.path.isdir(f_path) or folder_name == "关注列表": continue
                 
-                for fname in os.listdir(f_path):
+                for fname in files:
                     if fname.endswith(extension):
                         full_path = os.path.abspath(os.path.join(f_path, fname))
                         name_without_ext = fname.rsplit('.', 1)[0]
@@ -1031,7 +1080,12 @@ async def run_metadata_update(client=None, db_instance=None):
             await client.disconnect()
 
 async def main():
-    await run_metadata_update()
+    parser = argparse.ArgumentParser(description='Update Documentation and Metadata')
+    parser.add_argument('--prepare', action='store_true', help='仅执行根目录整理与环境准备')
+    parser.add_argument('--bot', type=str, help='指定 Bot 身份')
+    args = parser.parse_args()
+    
+    await run_metadata_update(only_prepare=args.prepare, bot_name=args.bot)
 
 if __name__ == "__main__":
     asyncio.run(main())

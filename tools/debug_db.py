@@ -1,58 +1,23 @@
 import sqlite3
-import json
 import os
 
-DB_PATH = 'data/tg_archives.db'
+db_path = 'data/copilot.db'
+if not os.path.exists(db_path):
+    print("DB not found")
+    exit(1)
 
-def get_schema():
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    
-    tables = cursor.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
-    print(f"Tables: {tables}")
-    
-    for (table,) in tables:
-        print(f"\n--- {table} ---")
-        schema = cursor.execute(f"PRAGMA table_info({table})").fetchall()
-        for col in schema:
-            print(col)
-            
-    conn.close()
+conn = sqlite3.connect(db_path)
+cursor = conn.cursor()
 
-def get_latest_timestamps():
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    
-    # Try to find latest sync per channel
-    # Usually sync_runs has start_time and we link messages via sync_run_id
-    try:
-        syncs = cursor.execute('''
-            SELECT original_chat_id, MAX(r.start_time) 
-            FROM messages m
-            JOIN sync_runs r ON m.sync_run_id = r.run_id
-            GROUP BY original_chat_id
-        ''').fetchall()
-        print(f"\nLatest Syncs: {syncs}")
-    except Exception as e:
-        print(f"Sync query failed: {e}")
+chat_id = -1002784674222
+cursor.execute("SELECT msg_id, res_id, res_video_id, res_photo_id FROM global_messages WHERE chat_id = ? AND res_id IS NOT NULL LIMIT 10", (chat_id,))
+rows = cursor.fetchall()
 
-    # Try to find latest backup per channel
-    try:
-        # Check if backup_runs table exists
-        backups = cursor.execute('''
-            SELECT chat_id, MAX(start_time)
-            FROM backup_runs
-            GROUP BY chat_id
-        ''').fetchall()
-        print(f"\nLatest Backups: {backups}")
-    except Exception as e:
-        print(f"Backup query failed: {e}")
-        
-    conn.close()
+if not rows:
+    print(f"No indexed messages found for chat_id {chat_id}")
+else:
+    print(f"Found {len(rows)} messages with IDs:")
+    for r in rows:
+        print(r)
 
-if __name__ == "__main__":
-    if os.path.exists(DB_PATH):
-        get_schema()
-        get_latest_timestamps()
-    else:
-        print(f"DB not found at {DB_PATH}")
+conn.close()

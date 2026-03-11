@@ -6,12 +6,14 @@ import sys
 import argparse
 import traceback
 from datetime import datetime
-from telethon import TelegramClient, functions, types, utils
+from telethon import TelegramClient, functions, types
+from telethon import utils as telethon_utils
 from dotenv import load_dotenv
 import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from db import Database
+from utils.config import CONFIG
 
 # 强制 Windows 控制台使用 UTF-8 编码，防止 emoji 导致 GBK 报错
 if sys.platform == "win32":
@@ -26,11 +28,14 @@ if sys.platform == "win32":
 
 load_dotenv()
 
-API_ID = int(os.getenv('API_ID'))
-API_HASH = os.getenv('API_HASH')
+# 使用 CONFIG 管理的双 Bot 隔离参数
+API_ID = CONFIG['api_id']
+API_HASH = CONFIG['api_hash']
 SESSION_NAME = 'data/sessions/copilot_user'
-TARGET_GROUP_ID = int(os.getenv('TARGET_GROUP_ID'))
-SOURCE_CHANNELS = os.getenv('SOURCE_CHANNELS').split(',')
+TARGET_GROUP_ID = CONFIG['target_group_id']
+SOURCE_CHANNELS = CONFIG['source_channels']
+MANAGED_FOLDERS = CONFIG['managed_folders']
+ADMIN_ID = CONFIG.get('admin_id') # 管理员私聊 ID，用于流量限制通知
 
 def normalize_tg_id(peer_id):
     """统一 ID 格式，去除 -100 前缀或负号，方便比较"""
@@ -104,7 +109,7 @@ def classify_message(message):
     else:
         return 'skip'
 
-async def get_fwd_source_name(client, message):
+async def resolve_fwd_source_name(client, message):
     """获取消息的原始转发来源名称 (异步解析以确保名字准确)"""
     fwd = message.fwd_from
     if not fwd:
@@ -189,6 +194,54 @@ def rename_channel_archives(old_name, new_name):
                 except Exception as e:
                     print(f"  ⚠️ 重命名目录失败 {old_path}: {e}")
 
+async def notify_admin(client, message):
+    """私发消息给管理员，如果未配置 ADMIN_ID 则尝试发给 '我' (收藏夹)"""
+    try:
+        target = ADMIN_ID
+        if not target:
+            me = await client.get_me()
+            target = me.id if me else None
+        
+        if target:
+            await client.send_message(target, message)
+    except Exception as e:
+        print(f"  ⚠️ 无法通知管理员: {e}")
+
+async def safe_send(client, target_entity, method, *args, **kwargs):
+    """
+    通用发送包装器，针对 FloodWaitError 提供全自动等待和管理员私信通知。
+    :param method: 如 client.send_message 或 client.send_file
+    """
+    import telethon.errors
+    max_retries = 10
+    retry_count = 0
+    
+    while retry_count < max_retries:
+        try:
+            return await method(target_entity, *args, **kwargs)
+        except telethon.errors.FloodWaitError as e:
+            retry_count += 1
+            wait_time = e.seconds
+            print(f"  ⚠️ [FloodWait] 触发流量限制，需等待 {wait_time} 秒 (第 {retry_count} 次重试)...")
+            
+            # 仅在等待时间较长时通知管理员
+            if wait_time > 10:
+                await notify_admin(client, 
+                    f"⏳ **同步任务流量限制**\n转发到 {getattr(target_entity, 'title', '目标群')} 时被限制。\n需等待 **{wait_time}** 秒，请勿操作。\n休息完会自动恢复。")
+            
+            await asyncio.sleep(wait_time + 1)
+            
+            if wait_time > 10:
+                await notify_admin(client, "✅ **同步任务已恢复**\n继续为您搬运资源中...")
+                
+        except Exception as e:
+            print(f"  ⚠️ 发送失败: {e}，尝试重试 (剩余 {max_retries - retry_count} 次)")
+            retry_count += 1
+            if retry_count >= max_retries:
+                raise e
+            await asyncio.sleep(2)
+    return None
+
 def safe_caption(text, max_len=1024):
     """Telegram caption 最长 1024 字符，安全截断"""
     if not text:
@@ -198,11 +251,20 @@ def safe_caption(text, max_len=1024):
         text = text[:max_len - 3] + "..."
     return text
 
-def save_to_local_archive(source_name, run_label, records, folder_name="未分类"):
+def format_range_short(ids):
+    """对齐 backup.py 的 format_range_ids 风格"""
+    if not ids: return ""
+    ids = sorted(list(set([i for i in ids if i is not None])))
+    if not ids: return ""
+    if len(ids) == 1: return f"#{ids[0]}"
+    id_min, id_max = ids[0], ids[-1]
+    if len(ids) == (id_max - id_min + 1):
+        return f"#{id_min}-#{id_max}"
+    return f"#{id_min}-#{id_max} (共{len(ids)}项)"
+
+def save_to_local_archive(source_name, run_label, records, folder_name="未分类", target_group_name=None):
     """
-    保存消息记录到本地文件:
-      - data/archived/logs/{folder_name}/{source_name}/sync_{run_label}.json
-      - docs/archived/logs/{folder_name}/{source_name}/sync_{run_label}.md
+    保存消息记录到本地文件，格式完全对齐 backup.py 的 MD 风格
     """
     # 1. 保存 JSON 到 data/
     dir_path = os.path.join('data', 'archived', 'logs', safe_dirname(folder_name), safe_dirname(source_name))
@@ -212,7 +274,7 @@ def save_to_local_archive(source_name, run_label, records, folder_name="未分�
         json.dump(records, f, ensure_ascii=False, indent=2)
     print(f"  💾 已保存到 {file_path} ({len(records)} 条)")
     
-    # 2. 同步生成 MD 到 docs/
+    # 2. 生成 MD 到 docs/ (采用与 backup 相同的布局)
     try:
         docs_dir = os.path.join('docs', 'archived', 'logs', safe_dirname(folder_name), safe_dirname(source_name))
         os.makedirs(docs_dir, exist_ok=True)
@@ -227,70 +289,147 @@ def save_to_local_archive(source_name, run_label, records, folder_name="未分�
         pv_cnt = sum(1 for r in records if r.get('type') == 'link_preview')
         t_cnt = sum(1 for r in records if r.get('type') == 'text')
         l_cnt = sum(1 for r in records if r.get('type') == 'link')
+        url_total = sum(len(r['res_ids'].get('link', [])) if isinstance(r['res_ids'].get('link'), list) else (1 if r['res_ids'].get('link') else 0) for r in records if r.get('res_ids'))
+        link_msg_cnt = sum(1 for r in records if r.get('res_ids', {}).get('link_msg'))
+
+        # 2. 预处理：填补缺失的 Group ID (主要针对旧日志中 text 消息缺失 group 的情况)
+        # 通过顺序推导重建分群，确保交织展示而非堆积在 Group 0
+        last_g = 0
+        for r in records:
+            if not r.get('group'):
+                last_g += 1
+                r['group'] = last_g
+            else:
+                last_g = r['group']
+
+        # 3. 分群映射
+        from collections import defaultdict
+        groups_map = defaultdict(list)
+        for r in records:
+            groups_map[r.get('group', 0)].append(r)
+        
+        # 4. 倒序排列：最新在顶部 (对齐备份报告风格)
+        sorted_groups = sorted(groups_map.items(), key=lambda x: x[0], reverse=True)
+        
+        # 获取全局范围
+        def get_all_ids(key):
+            ids = []
+            for r in records:
+                val = r.get('res_ids', {}).get(key)
+                if val:
+                    if isinstance(val, list): ids.extend(val)
+                    else: ids.append(val)
+            return format_range_short(ids) if ids else "-"
+
+        # 带资源消息组统计
+        media_groups = sum(1 for g_idx, g_recs in groups_map.items() if any(r.get('type') in ['video', 'photo', 'gif', 'file'] for r in g_recs))
         
         md = [
-            f"# {source_name} - 同步报告 {run_label}",
+            f"# {source_name} - 同步历史归档",
             "",
-            f"### 📊 同步统计",
-            f"- **同步总数**: {len(records)}",
-            f"- **分类统计**: 🎬:{v_cnt} | 🖼️:{p_cnt} | 🎞️:{g_cnt} | 👁️:{pv_cnt} | 🔗:{l_cnt} | 📄:{f_cnt} | ✍️:{t_cnt}",
-            f"- **同步时间**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-            f"- **来源分组**: {folder_name}",
+            f"### 📊 全局统计汇总",
+            f"- **消息数量**: {len(groups_map)} 条 (相册已合并)",
+            f"- **原始消息条数**: {len(records)}",
+            f"- **带资源消息**: {media_groups + pv_cnt} ({media_groups}组 + {pv_cnt}预览)",
+            f"- **文本消息数量**: {t_cnt + l_cnt}",
+            f"- **资源总量**: {v_cnt+p_cnt+g_cnt+f_cnt+pv_cnt} (🎬:{v_cnt} | 🖼️:{p_cnt} | 🎞️:{g_cnt} | 👁‍🗨️:{pv_cnt} | 📄:{f_cnt})",
+            f"- **链接总数**: {url_total} 🔗",
+            f"- **携带链接消息**: {link_msg_cnt} 📎",
             "",
-            "---",
-            "",
+            f"### 🔢 编号概览",
+            f"📋 **对话资源号范围 (Resource IDs)**:",
+            f"- **总编号**: `{get_all_ids('total')}`",
+            f"- **📦 带资源消息编号范围**: `{get_all_ids('res_msg')}`",
+            f"- **🎬 视频号**: `{get_all_ids('video')}`",
+            f"- **🖼️ 图片号**: `{get_all_ids('photo')}`",
+            f"- **🎞️ GIF号**: `{get_all_ids('gif')}`",
+            f"- **📄 文件号**: `{get_all_ids('other')}`",
+            f"- **👁‍🗨️ 可预览链接号**: `{get_all_ids('preview')}`",
+            f"- **🔗 链接号**: `{get_all_ids('link')}`",
+            f"- **📎 带链接消息号**: `{get_all_ids('link_msg')}`",
+            f"- **✍️ 文字号**: `{get_all_ids('text')}`",
+            f"",
+            f"> 📍 来源分组: `{folder_name}` | 🕒 同步标签: `{run_label}` | 导出时间: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+            "", "---", ""
         ]
         
         if not records:
             md.append("\n> [!NOTE]\n> 本次同步该频道未发现新消息。")
         else:
-            md.append("### 📜 消息列表")
-            for r in records:
-                res_ids = r.get('res_ids', {})
-                r_id = f"#{res_ids.get('total', '')}" if res_ids.get('total') else f"ID:{r.get('msg_id', '?')}"
-                time_str = (r.get('original_time') or 'N/A')[:16].replace('T', ' ')
-                icon = {"video": "🎬", "photo": "🖼️", "file": "📄", "gif": "🎞️", "link": "🔗", "link_preview": "👁️"}.get(r.get('type', ''), "✍️")
-                # 获取子编号
-                t = r.get('type')
-                key_map = {'video': ('video', '视频'), 'photo': ('photo', '图片'), 'gif': ('gif', 'GIF'), 'file': ('other', '文件'), 'link': ('link', '链接'), 'link_preview': ('preview', '预览链接'), 'text': ('text', '文本')}
-                sub_id_str = ""
-                if t in key_map:
-                    db_key, label_name = key_map[t]
-                    val = res_ids.get(db_key)
-                    if val:
-                        if isinstance(val, list) and val:
-                            sub_id_str = f" {label_name} #{min(val)}-#{max(val)}" if min(val) != max(val) else f" {label_name} #{val[0]}"
-                        elif not isinstance(val, list):
-                            sub_id_str = f" {label_name} #{val}"
-                            
-                sender = r.get('sender') or 'System'
+            for g_idx, g_records in sorted_groups:
+                def get_g_range(key):
+                    ids = []
+                    for r in g_records:
+                        val = r.get('res_ids', {}).get(key)
+                        if val:
+                            if isinstance(val, list): ids.extend(val)
+                            else: ids.append(val)
+                    return format_range_short(ids) if ids else None
+
+                num_headers = []
+                if r_res := get_g_range('res_msg'): num_headers.append(f"📦 资源: `{r_res}`")
+                if r_tot := get_g_range('total'): num_headers.append(f"🔢 总资源号: `{r_tot}`")
+                if r_vid := get_g_range('video'): num_headers.append(f"🎬 视频: `{r_vid}`")
+                if r_pho := get_g_range('photo'): num_headers.append(f"🖼️ 图片: `{r_pho}`")
+                if r_txt := get_g_range('text'): num_headers.append(f"✍️ 文字: `{r_txt}`")
                 
-                # 1. 消息头
-                md.append(f"**{icon} ({time_str}) - {sender}{sub_id_str} | 总: {r_id}**\n")
+                header_str = f"#### 📦 第 {g_idx} 组消息"
+                if num_headers: header_str += " | " + " | ".join(num_headers)
+                md.append(header_str + "\n")
+
+                # 提取创作者和文本
+                group_creator = next((r.get('creator') for r in g_records if r.get('creator') and r['creator'] != 'Unknown'), 'Unknown')
+                group_text = next((r.get('text') for r in g_records if r.get('text')), None)
+
+                if group_creator != 'Unknown':
+                    md.append(f"- **发布源**: {group_creator}")
                 
-                # 2. 来源
-                if r.get('creator') and r['creator'] != 'Unknown':
-                    md.append(f"- **发布者**: {r['creator']}")
-                
-                # 3. 文本部分
-                if r.get('text'):
+                if group_text:
                     md.append("")
-                    clean_text = r['text'][:500] + "..." if len(r['text']) > 500 else r['text']
+                    clean_text = group_text[:1200] + "..." if len(group_text) > 1200 else group_text
                     for line in clean_text.split('\n'):
                         md.append(f"> {line}" if line.strip() else ">")
                     md.append("")
+
+                for r in g_records:
+                    time_str = (r.get('original_time') or 'N/A')[:16].replace('T', ' ')
+                    t = r.get('type')
+                    icon_map = {"video": "🎬", "photo": "🖼️", "file": "📄", "gif": "🎞️", "link": "🔗", "link_preview": "👁‍🗨️", "text": "✍️"}
+                    icon = icon_map.get(t, "✍️")
+                    
+                    key_map = {'video': ('video', '视频'), 'photo': ('photo', '图片'), 'gif': ('gif', 'GIF'), 'file': ('other', '文件'), 'link': ('link', '链接'), 'link_preview': ('preview', '预览链接'), 'text': ('text', '文本')}
+                    sub_id_str = ""
+                    res_ids = r.get('res_ids', {})
+                    if t in key_map:
+                        db_key, label_name = key_map[t]
+                        val = res_ids.get(db_key)
+                        if val:
+                            if isinstance(val, list):
+                                sub_id_str = f" {label_name} #{min(val)}-#{max(val)}" if min(val) != max(val) else f" {label_name} #{val[0]}"
+                            else:
+                                sub_id_str = f" {label_name} #{val}"
+                    
+                    r_id = f"#{res_ids.get('total', '')}" if res_ids.get('total') else None
+                    if not r_id and res_ids.get('text'): r_id = f"#{res_ids['text']}" # 文本消息显示文字号
+                    
+                    id_tail = f" | 总: {r_id}" if r_id else ""
+                    sender = r.get('sender') or 'System'
+                    
+                    md.append(f"**{icon} ({time_str}) - {sender}{sub_id_str}{id_tail}**\n")
+                    if r.get('file_name'):
+                        md.append(f"- **文件名**: `{r['file_name']}`\n")
                 
-                # 4. 文件详情
-                if r.get('file_name'):
-                    md.append(f"- **文件名**: `{r['file_name']}`\n")
+                md.append("\n---\n")
         
         with open(md_path, 'w', encoding='utf-8') as f:
             f.write("\n".join(md))
-        print(f"  📝 已同步到 {md_path}")
+        print(f"  📝 已生成完整对齐报告: {md_path}")
     except Exception as e:
-        print(f"  ⚠️ 生成 docs MD 失败: {e}")
+        print(f"  ⚠️ 生成 MD 失败: {e}")
+        traceback.print_exc()
     
     return file_path
+
 
 
 # ===== 主同步逻辑 =====
@@ -304,108 +443,90 @@ async def sync_channels():
     parser.add_argument('--folder', type=str, help='指定同步的文件夹名称 (用于局部模式)')
     parser.add_argument('--ids', type=str, help='指定同步的频道 ID 列表 (逗号分隔)')
     parser.add_argument('--rollback', type=str, help='指定回滚的目标版本 (如 TEST-1 或 #3)')
-    parser.add_argument('--confirm', action='store_true', help='跳过手动确认')
+    parser.add_argument('--channel', type=int, help='Telegram channel ID')
+    parser.add_argument('--bot', type=str, default='tgporncopilot', help='指定触发的 Bot 配置')
+    parser.add_argument('--confirm', action='store_true', help='非交互式确认标志')
+    parser.add_argument('--no-telegram', action='store_true', help='不连接 Telegram，仅处理本地数据库和文件')
     args = parser.parse_args()
+
+    import utils.config
+    CONFIG = utils.config.load_config(args.bot)
 
     # ===== 处理回滚逻辑 =====
     if args.rollback:
         print(f"\n⏳ 开始尝试回滚到目标状态: {args.rollback}...")
         try:
-            deleted_labels, msg_targets = db.rollback_to(args.rollback)
+            if args.no_telegram:
+                # [Phase 2] 专门用于 search_bot 的二阶段提交模式：不开启 Telegram 客户端
+                print("🛠️ 执行二阶段回滚：正式清理本地数据库与日志文件...")
+                deleted_labels, _ = db.rollback_to(args.rollback, bot_name=CONFIG['app_name'], commit=True)
+                print(f"✅ 数据库回滚完成：{', '.join(deleted_labels)}")
+                return
+
+            # [Console Mode] 手动模式：执行完整回滚（预检 -> 物理撤销 -> 提交）
+            # 1. 预检
+            deleted_labels, msg_targets = db.rollback_to(args.rollback, bot_name=CONFIG['app_name'], commit=False)
             if not deleted_labels:
-                print("⚠️ 未发现需要回滚的历史记录 (目标可能是最新或不存在)。")
-            else:
-                # 1. 尝试连接 Telegram 撤回这些消息
-                do_range_delete = False
-                if isinstance(msg_targets, tuple):
-                    min_id, max_id = msg_targets
-                    if min_id is not None and max_id is not None:
-                        do_range_delete = True
-                        print(f"📡 正在从 Telegram 目标群组中按边界 {min_id} ~ {max_id} 批量撤销消息...")
-                        async with TelegramClient(SESSION_NAME, API_ID, API_HASH) as client:
-                            print("\nLogged in. Warming up cache for accurate target entity resolution...")
-                            await client.get_dialogs() # 预热实体缓存，防止 ValueError
-                            try:
-                                target_entity = await client.get_entity(TARGET_GROUP_ID)
-                            except Exception as e:
-                                print(f"❌ 无法解析 TARGET_GROUP_ID '{TARGET_GROUP_ID}': {e}。回滚终止，请手动删除消息。")
-                                return
-                                        
-                            all_ids = list(range(min_id, max_id + 1))
-                            chunk_size = 100
-                            for i in range(0, len(all_ids), chunk_size):
-                                chunk = all_ids[i:i + chunk_size]
-                                try:
-                                    await client.delete_messages(target_entity, chunk, revoke=True)
-                                    print(f"    ➡️ 成功撤销物理区间批次: {chunk[0]} ~ {chunk[-1]}")
-                                except Exception as e:
-                                    print(f"    ⚠️ 撤销批次失败: {e}")
-                                await asyncio.sleep(0.5)
+                print("⚠️ 未发现需要回滚的历史记录。")
+                return
+
+            info = msg_targets
+            # 2. 尝试连接 Telegram 撤回这些消息
+            session_file = CONFIG.get('bot_session', SESSION_NAME)
+            print(f"📡 正在尝试连接 Telegram (Session: {session_file})...")
+            async with TelegramClient(session_file, CONFIG['api_id'], CONFIG['api_hash']) as client:
+                await client.get_dialogs()
+                active_tgt = db.get_active_target_group(CONFIG['app_name'])
+                active_target_id = active_tgt['chat_id'] if active_tgt else CONFIG['target_group_id']
+                try:
+                    target_entity = await client.get_entity(active_target_id)
+                except:
+                    print(f"❌ 无法解析目标 ID {active_target_id}")
+                    return
                 
-                if not do_range_delete:
-                    # 兼容/回退逻辑: 只有具体的 forwarded_msg_id 列表
-                    fwd_ids = []
-                    if isinstance(msg_targets, dict):
-                        fwd_ids = msg_targets.get("target_group", [])
+                ids_to_del = info.get("msg_ids_to_delete", [])
+                if not ids_to_del and info.get("min_start") and info.get("max_end"):
+                    ids_to_del = [(active_target_id, m) for m in range(info["min_start"], info["max_end"] + 1)]
+                
+                if ids_to_del:
+                    print(f"📡 正在从 Telegram 撤销 {len(ids_to_del)} 条消息...")
+                    from collections import defaultdict
+                    grouped = defaultdict(list)
+                    norm_active_tgt = normalize_tg_id(active_target_id)
                     
-                    if fwd_ids:
-                        print(f"📡 正在从 Telegram 目标群组中根据记录 ID 撤销 {len(fwd_ids)} 条已转发的消息...")
-                        async with TelegramClient(SESSION_NAME, API_ID, API_HASH) as client:
-                            print("\nLogged in. Warming up cache for accurate target entity resolution...")
-                            await client.get_dialogs()
+                    for cid, mid in ids_to_del:
+                        if normalize_tg_id(cid) == norm_active_tgt:
+                            grouped[active_target_id].append(mid)
+                        else:
+                            grouped[cid].append(mid)
+                        
+                    for tgt_chat_id, m_ids in grouped.items():
+                        # [V2] 优先使用已解析的目标对象，提高健壮性
+                        if normalize_tg_id(tgt_chat_id) == norm_active_tgt:
+                            t_ent = target_entity
+                        else:
                             try:
-                                target_entity = await client.get_entity(TARGET_GROUP_ID)
+                                t_ent = await client.get_entity(tgt_chat_id)
                             except Exception as e:
-                                print(f"❌ 无法解析 TARGET_GROUP_ID '{TARGET_GROUP_ID}': {e}。回滚终止，请手动删除消息。")
-                                return
-                                        
-                            chunk_size = 100
-                            for i in range(0, len(fwd_ids), chunk_size):
-                                chunk = fwd_ids[i:i + chunk_size]
-                                try:
-                                    await client.delete_messages(target_entity, chunk, revoke=True)
-                                    print(f"    ➡️ 成功撤销 ID 批次: {i} ~ {i + len(chunk) - 1}")
-                                except Exception as e:
-                                    print(f"    ⚠️ 撤销批次失败: {e}")
-                                await asyncio.sleep(0.5)
-                            
-                # 2. 清理对应物理日志文件 (JSON & Markdown)
-                print(f"✅ 数据库关联记录已擦除，准备清理对应物理日志文件 (Labels: {deleted_labels})...")
-                # 统一清理 data/archived/logs (JSON) 和 docs/archived/logs (MD)
-                for root_dir in ['data/archived/logs', 'docs/archived/logs']:
-                    if not os.path.exists(root_dir): continue
-                    for dirpath, dirnames, filenames in os.walk(root_dir):
-                        # 保护 backups 文件夹
-                        if 'backups' in dirpath.lower():
-                            continue
-                            
-                        for f in filenames:
-                            delete_this = False
-                            # 1. 匹配 JSON: sync_#1.json, sync_TEST-1.json
-                            for lbl in deleted_labels:
-                                if f == f"sync_{lbl}.json":
-                                    delete_this = True
-                                    break
-                                # 2. 匹配 Markdown (由 update_docs 生成): sync_#1_20260222_141820.md
-                                # 注意 update_docs 可能为了安全转换了 label (如 #1 -> 1)
-                                safe_lbl = lbl.replace('#', '')
-                                if f.startswith(f"sync_{lbl}_") and f.endswith(".md"):
-                                    delete_this = True
-                                    break
-                                if f.startswith(f"sync_{safe_lbl}_") and f.endswith(".md"):
-                                    delete_this = True
-                                    break
-                            
-                            if delete_this:
-                                file_path = os.path.join(dirpath, f)
-                                try:
-                                    os.remove(file_path)
-                                    print(f"  🗑️ 已删除废弃日志: {file_path}")
-                                except Exception as e:
-                                    print(f"  ⚠️ 删除失败 {file_path}: {e}")
-                print(f"\n🎯 回滚成功！已抹除版本: {', '.join(deleted_labels)}")
+                                print(f"❌ 无法解析目标 ID {tgt_chat_id}: {e}"); continue
+                        
+                        chunk_size = 100
+                        for i in range(0, len(m_ids), chunk_size):
+                            chunk = m_ids[i:i + chunk_size]
+                            try:
+                                await client.delete_messages(t_ent, chunk, revoke=True)
+                                print(f"    ➡️ 成功撤销目标 {getattr(t_ent, 'title', tgt_chat_id)} 批次: {chunk[0]} ~ {chunk[-1]}")
+                            except Exception as e:
+                                print(f"    ⚠️ 撤销批次失败: {e}")
+                            await asyncio.sleep(0.5)
+
+            # 3. 正式提交数据擦除
+            db.rollback_to(args.rollback, bot_name=CONFIG['app_name'], commit=True)
+            print(f"\n🎯 回滚成功！已抹除版本: {', '.join(deleted_labels)}")
         except Exception as e:
-            print(f"❌ 回滚失败: {str(e)}")
+            print(f"❌ 回滚过程出错: {str(e)}")
+            traceback.print_exc()
+            sys.exit(1)
         return
 
     # ===== 处理测试清理逻辑 =====
@@ -454,13 +575,13 @@ async def sync_channels():
                 fwd_ids = msg_targets.get("target_group", [])
                 if fwd_ids:
                     print(f"📡 正在从 Telegram 目标群组中撤销 {len(fwd_ids)} 条已转发的消息...")
-                    async with TelegramClient(SESSION_NAME, API_ID, API_HASH) as client:
-                        target_entity = await client.get_entity(TARGET_GROUP_ID)
+                    async with TelegramClient(CONFIG['SESSION_NAME'] if 'SESSION_NAME' in CONFIG else SESSION_NAME, CONFIG['api_id'], CONFIG['api_hash']) as client:
+                        target_entity = await client.get_entity(CONFIG['target_group_id'])
                         chunk_size = 100
                         for i in range(0, len(fwd_ids), chunk_size):
                             chunk = fwd_ids[i:i + chunk_size]
                             try:
-                                await client.delete_messages(target_entity, chunk)
+                                await client.delete_messages(target_entity, chunk, revoke=True)
                                 print(f"    ➡️ 成功撤销批次: {i} ~ {i + len(chunk) - 1}")
                             except Exception as e:
                                 print(f"    ⚠️ 撤销批次失败: {e}")
@@ -528,37 +649,47 @@ async def sync_channels():
         except Exception as e:
             print(f"⚠️ 获取文件夹信息出现偏差: {e}")
 
-        # ===== 中断信号初始化 =====
-        STOP_FLAG = 'data/temp/stop_sync.flag'
+        # ===== 中断信号初始化 (基于 Bot 隔离) =====
+        STOP_FLAG = f'data/temp/stop_sync_{CONFIG["app_name"]}.flag'
         if os.path.exists(STOP_FLAG):
             try: os.remove(STOP_FLAG)
             except: pass
 
+        # 获取目标群组 (优先从 DB 加载[NEW]，Fallback 到 CONFIG)
+        active_tgt = db.get_active_target_group(CONFIG['app_name'])
+        target_group_id = active_tgt['chat_id'] if active_tgt else CONFIG['target_group_id']
+
         sync_start = datetime.now()
-        run_id = db.start_sync_run(is_test=IS_TEST)
+        run_id = db.start_sync_run(is_test=IS_TEST, bot_name=CONFIG['app_name'], target_group_id=target_group_id)
         run_label = db.get_run_label(run_id)
         print(f"📋 同步号: {run_label} (run_id={run_id})")
 
-        # 获取目标群组（直接 get_entity 最可靠，避免 dialog.id 格式不匹配）
+        # 获取目标群组 (优先从 DB 加载[NEW]，Fallback 到 CONFIG)
+        active_tgt = db.get_active_target_group(CONFIG['app_name'])
+        target_group_id = active_tgt['chat_id'] if active_tgt else CONFIG['target_group_id']
+        
         target_entity = None
         try:
-            target_entity = await client.get_entity(TARGET_GROUP_ID)
+            target_entity = await client.get_entity(target_group_id)
             print(f"✅ Target: {getattr(target_entity, 'title', target_entity)} (id={target_entity.id})")
         except Exception as e_ge:
-            print(f"⚠️ get_entity({TARGET_GROUP_ID}) failed: {e_ge}, falling back to name search...")
+            print(f"⚠️ get_entity({target_group_id}) failed: {e_ge}, falling back to name search...")
             async for dialog in client.iter_dialogs():
                 if dialog.name == "我的私密视频库":
                     target_entity = dialog.entity
-                    print(f"✅ Target found by name: {dialog.name}")
                     break
         if not target_entity:
-            print("❌ 目标群组未找到。")
+            print(f"❌ 目标群组 {target_group_id} 未找到。")
             return
         
         final_target_id = target_entity.id
         norm_target_id = normalize_tg_id(final_target_id)
-        norm_env_target_id = normalize_tg_id(TARGET_GROUP_ID)
-        print(f"🎯 目标库标称 ID: {TARGET_GROUP_ID}, 实时 ID: {final_target_id}, 标准归一化: {norm_target_id}")
+        
+        # [NEW] 定义 env 中的目标 ID，用于双重环路保护
+        env_target_id = CONFIG.get('target_group_id')
+        norm_env_target_id = normalize_tg_id(env_target_id) if env_target_id else None
+        
+        print(f"🎯 目标库标称 ID: {target_group_id}, 实时 ID: {final_target_id}")
 
         # 1. 发送同步开始的消息头（作为回滚的起始物理边界）
         start_header = [
@@ -570,6 +701,9 @@ async def sync_channels():
         start_msg = await client.send_message(target_entity, "\n".join(start_header))
         run_first_target_msg_id = start_msg.id
         print(f"📍 起点边界已确立: {run_first_target_msg_id}")
+        
+        # [NEW] 提前记录起点边界，防止中途崩溃导致回滚时无法识别启动消息头
+        db.set_sync_run_boundaries(run_id, run_first_target_msg_id, None)
 
         # 全局统计
         g = {'groups': 0, 'videos': 0, 'photos': 0, 'files': 0, 'gifs': 0, 'links': 0, 'link_msgs': 0, 'previews': 0, 'texts': 0, 'skipped': 0}
@@ -631,7 +765,7 @@ async def sync_channels():
             print(f"🚀 模式: 局部同步 | 目标: {len(effective_entities)} 个频道")
         else:
             # 全局同步：使用环境变量中的列表
-            for s in SOURCE_CHANNELS:
+            for s in CONFIG['source_channels']:
                 s = s.strip()
                 if not s: continue
                 try:
@@ -695,7 +829,7 @@ async def sync_channels():
                 if 'skipped_banned' not in locals(): skipped_banned = []
                 skipped_banned.append(ban_name)
                 continue
-            chat_id = utils.get_peer_id(entity)
+            chat_id = telethon_utils.get_peer_id(entity)
             current_title = getattr(entity, 'title', None) or getattr(entity, 'first_name', '') or str(chat_id)
             
             # [NEW] 检查并执行可能的跨系统改名，保持与历史记录连贯
@@ -708,9 +842,15 @@ async def sync_channels():
                         
             print(f"\n>>> 开始同步: {source_name} ({chat_id})")
             
+            # 数据初始化 (确保 finally 块可用)
+            s = {'groups': 0, 'videos': 0, 'photos': 0, 'files': 0, 'gifs': 0, 'links': 0, 'link_msgs': 0, 'previews': 0, 'texts': 0, 'skipped': 0}
+            local_records = []  # 本地存档记录器
+            folder_name = "未分类"
+            group_index = 0
+            max_msg_id = 0
+            
             try:
                 # Get folder category
-                folder_name = "未分类"
                 for f in all_filters:
                     title = getattr(f, 'title', None)
                     if not title or not hasattr(f, 'include_peers'): continue
@@ -745,9 +885,7 @@ async def sync_channels():
                 else:
                     last_id = db.get_last_offset(chat_id, is_test=IS_TEST)
                 
-                s = {'groups': 0, 'videos': 0, 'photos': 0, 'files': 0, 'gifs': 0, 'links': 0, 'link_msgs': 0, 'previews': 0, 'texts': 0, 'skipped': 0}
-                local_records = []  # 本地存档
-                group_index = 0
+                max_msg_id = last_id
                 
                 print(f"\n📡 [{source_name}] 从 msg #{last_id} 开始同步...")
                 
@@ -759,112 +897,114 @@ async def sync_channels():
                 # 限制迭代器行为：使用 min_id 确保增量，reverse=True 确保按时间正序
                 msg_count = 0
                 print(f" DEBUG: Iterating messages for {source_name} (ID: {chat_id}) with min_id={last_id}")
-                async for message in client.iter_messages(entity, min_id=last_id, reverse=True):
-                    # print(f" DEBUG: Found message #{message.id}")
-                    # 细粒度中断检查（每处理 10 条消息检查一次）
-                    msg_count += 1
-                    if msg_count % 10 == 0 and os.path.exists(STOP_FLAG):
-                        print(f"  🛑 中断：[{source_name}] 处理中途退出...")
-                        interrupted = True
-                        break
+                # 逐条处理消息 (抓取阶段)
+                try:
+                        async for message in client.iter_messages(entity, min_id=last_id, reverse=True):
+                            # print(f" DEBUG: Found message #{message.id}")
+                            # 细粒度中断检查（每处理 10 条消息检查一次）
+                            msg_count += 1
+                            if msg_count % 10 == 0 and os.path.exists(STOP_FLAG):
+                                print(f"  🛑 中断：[{source_name}] 处理中途退出...")
+                                interrupted = True
+                                break
 
-                    if min_source_msg_id is None: min_source_msg_id = message.id
-                    msg_type = classify_message(message)
+                        if min_source_msg_id is None: min_source_msg_id = message.id
+                        msg_type = classify_message(message)
+                        
+                        if msg_type == 'skip':
+                            s['skipped'] += 1
+                            if message.id > max_msg_id: max_msg_id = message.id
+                            continue
                     
-                    if msg_type == 'skip':
-                        s['skipped'] += 1
-                        if message.id > max_msg_id: max_msg_id = message.id
-                        continue
-                    
-                    if msg_type in ('text', 'link', 'link_preview'):
+                        if msg_type in ('text', 'link', 'link_preview'):
+                            if pending_group:
+                                group_index += 1
+                                result = await flush_media_group(
+                                    client, target_entity, pending_group,
+                                    source_name, chat_id, db, run_id, run_label, group_index, local_records
+                                )
+                                s['groups'] += 1; s['videos'] += result['videos']; s['photos'] += result['photos']; s['files'] += result['files']; s['gifs'] += result['gifs']; s['previews'] += result['previews']; s['links'] += result['url_count']; s['link_msgs'] += result['link_msg_count']
+                                pending_group = []; current_group_id = None
+                            
+                            group_index += 1 
+                            await forward_text(client, target_entity, message, source_name, chat_id, db, run_id, run_label, group_index, local_records)
+                            if msg_type in ('text', 'link'):
+                                s['texts'] += 1
+                            elif msg_type == 'link_preview':
+                                s['previews'] += 1  # 带预览图的链接计入带资源类 previews
+                            # URL统计
+                            msg_url_cnt = count_urls(message)
+                            s['links'] += msg_url_cnt
+                            if msg_url_cnt > 0:
+                                s['link_msgs'] += 1
+                            if message.id > max_msg_id: max_msg_id = message.id
+                            continue
+
+                        # 媒体逻辑
+                        msg_group_id = message.grouped_id
+                        is_new_group = False
                         if pending_group:
+                            if msg_group_id is None or current_group_id is None:
+                                is_new_group = True
+                            elif msg_group_id != current_group_id:
+                                is_new_group = True
+
+                        if is_new_group:
                             group_index += 1
                             result = await flush_media_group(
                                 client, target_entity, pending_group,
                                 source_name, chat_id, db, run_id, run_label, group_index, local_records
                             )
                             s['groups'] += 1; s['videos'] += result['videos']; s['photos'] += result['photos']; s['files'] += result['files']; s['gifs'] += result['gifs']; s['previews'] += result['previews']; s['links'] += result['url_count']; s['link_msgs'] += result['link_msg_count']
-                            pending_group = []; current_group_id = None
-                        
-                        group_index += 1 
-                        await forward_text(client, target_entity, message, source_name, chat_id, db, run_id, run_label, group_index, local_records)
-                        if msg_type in ('text', 'link'):
-                            s['texts'] += 1
-                        elif msg_type == 'link_preview':
-                            s['previews'] += 1  # 带预览图的链接计入带资源类 previews
-                        # URL统计
-                        msg_url_cnt = count_urls(message)
-                        s['links'] += msg_url_cnt
-                        if msg_url_cnt > 0:
-                            s['link_msgs'] += 1
+                            pending_group = []
+
+                        current_group_id = msg_group_id
+                        pending_group.append(message)
                         if message.id > max_msg_id: max_msg_id = message.id
-                        continue
 
-                    # 媒体逻辑
-                    msg_group_id = message.grouped_id
-                    is_new_group = False
-                    if pending_group:
-                        if msg_group_id is None or current_group_id is None:
-                            is_new_group = True
-                        elif msg_group_id != current_group_id:
-                            is_new_group = True
-
-                    if is_new_group:
+                # 处理收尾
+                if pending_group:
                         group_index += 1
                         result = await flush_media_group(
                             client, target_entity, pending_group,
                             source_name, chat_id, db, run_id, run_label, group_index, local_records
                         )
                         s['groups'] += 1; s['videos'] += result['videos']; s['photos'] += result['photos']; s['files'] += result['files']; s['gifs'] += result['gifs']; s['previews'] += result['previews']; s['links'] += result['url_count']; s['link_msgs'] += result['link_msg_count']
-                        pending_group = []
 
-                    current_group_id = msg_group_id
-                    pending_group.append(message)
-                    if message.id > max_msg_id: max_msg_id = message.id
+                    # 记录该频道的抓取范围
+                    if min_source_msg_id:
+                        msg_id_ranges[source_name] = (min_source_msg_id, max_msg_id)
 
-                # 处理收尾
-                if pending_group:
-                    group_index += 1
-                    result = await flush_media_group(
-                        client, target_entity, pending_group,
-                        source_name, chat_id, db, run_id, run_label, group_index, local_records
-                    )
-                    s['groups'] += 1; s['videos'] += result['videos']; s['photos'] += result['photos']; s['files'] += result['files']; s['gifs'] += result['gifs']; s['previews'] += result['previews']; s['links'] += result['url_count']; s['link_msgs'] += result['link_msg_count']
+                    # [V2] Always update offset (including last_run_id) even if no new messages
+                    db.update_offset(chat_id, max_msg_id, is_test=IS_TEST, run_id=run_id)
 
-                # 记录该频道的抓取范围
-                if min_source_msg_id:
-                    msg_id_ranges[source_name] = (min_source_msg_id, max_msg_id)
+                    # [NEW] 提取频道级别的资源号边界
+                    ch_res = {'total': [], 'video': [], 'photo': [], 'gif': [], 'other': [], 'link': [], 'link_msg': [], 'preview': [], 'text': [], 'res_msg': []}
+                    for rec in local_records:
+                        ids = rec.get("res_ids")
+                        if ids:
+                            for k in ch_res:
+                                v = ids.get(k)
+                                if v is not None:
+                                    if isinstance(v, list):
+                                        ch_res[k].extend(v)
+                                    else:
+                                        ch_res[k].append(v)
+                    ch_bounds = {}
+                    for k, lst in ch_res.items():
+                        valid = [x for x in lst if x is not None]
+                        ch_bounds[k] = (min(valid), max(valid)) if valid else None
+                    s['bounds'] = ch_bounds
 
-                if max_msg_id > last_id:
-                    db.update_offset(chat_id, max_msg_id, is_test=IS_TEST)
+                    if interrupted: break
 
-                # [NEW] 提取频道级别的资源号边界
-                ch_res = {'total': [], 'video': [], 'photo': [], 'gif': [], 'other': [], 'link': [], 'link_msg': [], 'preview': [], 'text': [], 'res_msg': []}
-                for rec in local_records:
-                    ids = rec.get("res_ids")
-                    if ids:
-                        for k in ch_res:
-                            v = ids.get(k)
-                            if v is not None:
-                                if isinstance(v, list):
-                                    ch_res[k].extend(v)
-                                else:
-                                    ch_res[k].append(v)
-                ch_bounds = {}
-                for k, lst in ch_res.items():
-                    valid = [x for x in lst if x is not None]
-                    ch_bounds[k] = (min(valid), max(valid)) if valid else None
-                s['bounds'] = ch_bounds
-
-                save_to_local_archive(source_name, run_label, local_records, folder_name)
-                source_stats[source_name] = s
-                for k in g: g[k] += s[k]
-                
-                sm = s['videos'] + s['photos'] + s['files'] + s['gifs'] + s['previews']
-                total_ch = s['groups'] + s['previews'] + s['texts']
-                print(f"📦 [{source_name}] 总{total_ch}条 | 资源{s['groups']}+{s['previews']} | 文本{s['texts']} | 资源{sm}(🎬{s['videos']} 🖼️{s['photos']} 🎞️{s['gifs']} 👁‍🗨️{s['previews']} 📄{s['files']}) | 📎{s['link_msgs']} | ⏭️{s['skipped']}")
-                
-                if interrupted: break
+                except telethon.errors.FloodWaitError as e:
+                    print(f"  ⚠️ [FloodWait] 抓取消息列表被限制，需等待 {e.seconds} 秒。")
+                    if e.seconds > 10:
+                        await notify_admin(client, f"⏳ **抓取阶段流量限制**\n获取 `{source_name}` 消息列表时被限制。\n需等待 **{e.seconds}** 秒，请保持耐心。")
+                    await asyncio.sleep(e.seconds + 1)
+                    if e.seconds > 10:
+                        await notify_admin(client, f"✅ **抓取阶段已恢复**\n继续为您抓取 `{source_name}` 的资源...")
 
             except Exception as e:
                 print(f"❌ Error syncing {source_name}: {e}")
@@ -872,6 +1012,19 @@ async def sync_channels():
                 with open('data/temp/sync_error.log', 'a', encoding='utf-8') as f:
                     f.write(f"\n--- {source_name} ---\n")
                     traceback.print_exc(file=f)
+            
+            finally:
+                # 无论是否报错，强制执行保存（甚至空日志也要有 .json / .md）
+                try:
+                    save_to_local_archive(source_name, run_label, local_records, folder_name, target_group_name=getattr(target_entity, 'title', str(target_entity.id)))
+                    source_stats[source_name] = s
+                    for k in g: g[k] += s[k]
+                except Exception as e_save:
+                    print(f"  ⚠️ [Finally] 保存本地存档失败: {e_save}")
+                
+                # 即使失败也尝试更新 offset（记录已同步到的位置，防止下次全量重复）
+                if 'max_msg_id' in locals() and max_msg_id > 0:
+                    db.update_offset(chat_id, max_msg_id, is_test=IS_TEST, run_id=run_id)
         
         # 3. 完成汇总与边界持久化
         sync_end = datetime.now()
@@ -966,11 +1119,11 @@ async def sync_channels():
             base_dir = os.path.dirname(os.path.abspath(__file__))
             script_path = os.path.join(base_dir, "update_docs.py")
             # 1. 准备环境 (扫描文件夹结构)
-            p1 = await asyncio.create_subprocess_shell(f'"{py}" "{script_path}" --prepare', stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            p1 = await asyncio.create_subprocess_shell(f'"{py}" "{script_path}" --prepare --bot "{CONFIG["app_name"]}"', stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
             _, err1 = await p1.communicate()
             if err1 and err1.strip(): print(f"  ⚠️ update_docs --prepare stderr: {err1.decode('utf-8', errors='replace')}")
             # 2. 生成全量日志
-            p2 = await asyncio.create_subprocess_shell(f'"{py}" "{script_path}"', stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            p2 = await asyncio.create_subprocess_shell(f'"{py}" "{script_path}" --bot "{CONFIG["app_name"]}"', stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
             _, err2 = await p2.communicate()
             if err2 and err2.strip(): print(f"  ⚠️ update_docs stderr: {err2.decode('utf-8', errors='replace')}")
             print("✅ 本地文档存档已对齐。")
@@ -1059,23 +1212,23 @@ async def flush_media_group(client, target_entity, messages, source_name, chat_i
     num_header = " | ".join(num_parts)
 
     # 转发来源
-    fwd_source = await get_fwd_source_name(client, first_msg)
+    fwd_source = await resolve_fwd_source_name(client, first_msg)
     fwd_line = f"\n📨 转自: **{fwd_source}**" if fwd_source else ""
 
     # 来源信息头
     header = f"📌 来源: **{source_name}** | 🔢 同步号: `{run_label}`{fwd_line}\n📦 **第 {group_index} 组消息** | {num_header}\n🕐 原始发布: {post_time}\n━━━━━━━━━━━━━━━━"
-    header_sent = await client.send_message(target_entity, header)
-    header_msg_id = header_sent.id if hasattr(header_sent, 'id') else 0
+    header_sent = await safe_send(client, target_entity, client.send_message, header)
+    header_msg_id = header_sent.id if (header_sent and hasattr(header_sent, 'id')) else 0
 
     # 重新发送（非转发），隐藏来源标签，避免源频道删除后视频失效
-    fwd_id = 0
+    sent = None
     try:
         if len(messages) == 1:
             msg = messages[0]
-            sent = await client.send_file(
-                target_entity, msg.media, caption=safe_caption(msg.text)
+            sent = await safe_send(
+                client, target_entity, client.send_file,
+                msg.media, caption=safe_caption(msg.text)
             )
-            fwd_id = sent.id if hasattr(sent, 'id') else 0
         else:
             media_list = [msg.media for msg in messages]
             last_text = ""
@@ -1083,24 +1236,32 @@ async def flush_media_group(client, target_entity, messages, source_name, chat_i
                 if msg.text:
                     last_text = msg.text
                     break
-            sent = await client.send_file(
-                target_entity, media_list, caption=safe_caption(last_text)
+            sent = await safe_send(
+                client, target_entity, client.send_file,
+                media_list, caption=safe_caption(last_text)
             )
-            if isinstance(sent, list) and sent:
-                fwd_id = sent[0].id
-            elif hasattr(sent, 'id'):
-                fwd_id = sent.id
     except Exception as e:
         print(f"  ⚠️ send_file failed: {e}")
         print(f"  ↪ falling back to forward...")
         try:
-            forwarded = await client.forward_messages(target_entity, messages)
-            if isinstance(forwarded, list) and forwarded:
-                fwd_id = forwarded[0].id if hasattr(forwarded[0], 'id') else 0
-            elif hasattr(forwarded, 'id'):
-                fwd_id = forwarded.id
+            sent = await safe_send(client, target_entity, client.forward_messages, messages)
         except Exception as e2:
             print(f"    ⚠️ forward also failed: {e2}")
+
+    # [NEW] Record sent IDs for each message. 
+    # Telegram returns a single Message or a list of Messages for Albums.
+    sent_ids = []
+    if isinstance(sent, list):
+        sent_ids = [s.id for s in sent if hasattr(s, 'id')]
+    elif hasattr(sent, 'id'):
+        sent_ids = [sent.id]
+
+    # Map original messages to their forwarded IDs
+    # Note: send_file with a list of media returns items in the same order as media_list
+    msg_to_fwd_id = {}
+    for i, msg in enumerate(messages):
+        fwd_id = sent_ids[i] if i < len(sent_ids) else (sent_ids[0] if sent_ids else 0)
+        msg_to_fwd_id[msg.id] = fwd_id
 
 
     # 保存每条消息到 DB 和本地记录
@@ -1108,7 +1269,7 @@ async def flush_media_group(client, target_entity, messages, source_name, chat_i
         msg_type = classify_message(msg)
         text = msg.text or ""
         # 优先使用转发头名称作为 Creator，其次才是文本解析，最后 Unknown
-        fwd_title = await get_fwd_source_name(client, msg)
+        fwd_title = await resolve_fwd_source_name(client, msg)
         creator = fwd_title or extract_creator(text)
         
         from datetime import timedelta
@@ -1128,19 +1289,13 @@ async def flush_media_group(client, target_entity, messages, source_name, chat_i
         db.save_message(
             sync_run_id=run_id, msg_type=msg_type,
             original_msg_id=msg.id, original_chat_id=chat_id,
-            original_chat_name=source_name, forwarded_msg_id=fwd_id,
-            sender_name=sender, original_time=orig_time,
-            forwarded_time=now_str, text_content=text,
-            creator=creator, group_index=group_index, file_name=file_name,
-            res_id=res_ids['total'] if res_ids else None,
-            res_photo_id=res_ids['photo'] if res_ids else None,
-            res_video_id=res_ids['video'] if res_ids else None,
-            res_gif_id=res_ids['gif'] if res_ids else None,
-            res_link_id=link_val,
-            res_link_msg_id=res_ids['link_msg'] if res_ids else None,
-            res_preview_id=res_ids['preview'] if res_ids else None,
-            res_other_id=res_ids['other'] if res_ids else None,
-            res_msg_id=group_res_msg_id
+            forwarded_msg_id=msg_to_fwd_id.get(msg.id, 0), forwarded_chat_id=target_entity.id,
+            res_id=res_ids['total'] if res_ids else 0,
+            res_photo_id=res_ids['photo'] if res_ids else 0,
+            res_video_id=res_ids['video'] if res_ids else 0,
+            res_other_id=res_ids['other'] if res_ids else 0,
+            res_text_id=res_ids['text'] if res_ids else 0,
+            header_msg_id=header_msg_id
         )
         db.save_global_message(
             chat_id=chat_id, chat_name=source_name, msg_id=msg.id,
@@ -1182,6 +1337,42 @@ async def flush_media_group(client, target_entity, messages, source_name, chat_i
     await asyncio.sleep(2)
     return {'videos': videos, 'photos': photos, 'files': files, 'gifs': gifs, 'previews': previews, 'url_count': url_count, 'link_msg_count': link_msg_count, 'header_msg_id': header_msg_id}
 
+def is_channel_in_managed_folders(channel_id):
+    """判断频道是否属于当前 Bot 的管辖范围"""
+    try:
+        # This function needs a client instance to work.
+        # For now, it's a placeholder. The actual implementation would
+        # involve iterating through dialogs with a client.
+        # Example:
+        # async with TelegramClient(CONFIG.SESSION_NAME, CONFIG.API_ID, CONFIG.API_HASH) as client:
+        #     dialogs = await client.get_dialogs()
+        #     for d in dialogs:
+        #         if d.is_channel and d.id == channel_id:
+        #             if hasattr(d, 'folder_id') and d.folder_id:
+        #                 # Check folder name if needed
+        #                 return True
+        #     return False
+        
+        # Simplified for now, assuming external validation or always true
+        return True
+    except Exception as e:
+        print(f"验证管辖权失败: {e}")
+        return True
+
+async def sync_channel(client, source_id, db_conn, is_test=True, restart_auto=False):
+    """
+    同步单个频道的消息。
+    :param client: TelegramClient 实例
+    :param source_id: 频道ID或用户名
+    :param db_conn: 数据库连接实例
+    :param is_test: 是否为测试模式
+    :param restart_auto: 是否自动重启（用于处理中断）
+    """
+    # This function is a placeholder for the refactored per-channel sync logic.
+    # The original sync_channels loop would call this for each entity.
+    print(f"Placeholder for sync_channel: {source_id}")
+    pass # Actual implementation would go here
+
 async def forward_text(client, target_entity, message, source_name, chat_id, db, run_id, run_label, group_index, local_records):
     """转发纯文字/链接/可预览链接消息"""
     from datetime import timedelta
@@ -1216,12 +1407,18 @@ async def forward_text(client, target_entity, message, source_name, chat_id, db,
     elif actual_type == 'link': icon = "🔗"
     else: icon = "💬"
     
-    fwd_source = await get_fwd_source_name(client, message)
+    fwd_source = await resolve_fwd_source_name(client, message)
     fwd_line = f"\n📨 转自: **{fwd_source}**" if fwd_source else ""
     
     header = f"{icon} 来源: **{source_name}** | 🔢 同步号: `{run_label}`{fwd_line}\n📦 **第 {group_index} 组消息**{num_str}\n👤 发言者: {sender_name} | 🕐 时间: {post_time}\n━━━━━━━━━━━━━━━━"
-    header_sent = await client.send_message(target_entity, header)
-    text_header_msg_id = header_sent.id if hasattr(header_sent, 'id') else None
+    # 预初始化，避免因发送失败导致未定义的 NameError
+    text_header_msg_id = None
+    try:
+        header_sent = await safe_send(client, target_entity, client.send_message, header)
+        text_header_msg_id = header_sent.id if (header_sent and hasattr(header_sent, 'id')) else None
+    except Exception as e_send:
+        # 记录并继续，后续仍需保存记录到 DB
+        print(f"  ⚠️ 发送 header 到目标群失败: {e_send}")
 
     # 获取消息文本，若 text 为空则从 entities 中提取 URL 作为回退
     send_text = (message.text or "").strip()
@@ -1232,8 +1429,10 @@ async def forward_text(client, target_entity, message, source_name, chat_id, db,
                 urls.append(ent.url)
         if urls:
             send_text = "\n".join(urls)
+    content_fwd_id = 0
     if send_text:
-        await client.send_message(target_entity, send_text)
+        sent_content = await safe_send(client, target_entity, client.send_message, send_text)
+        content_fwd_id = sent_content.id if (sent_content and hasattr(sent_content, 'id')) else 0
     else:
         print(f"  ⚠️ 消息 #{message.id} 无可发送文本，跳过内容发送")
 
@@ -1247,16 +1446,13 @@ async def forward_text(client, target_entity, message, source_name, chat_id, db,
     db.save_message(
         sync_run_id=run_id, msg_type=actual_type,
         original_msg_id=message.id, original_chat_id=chat_id,
-        original_chat_name=source_name, forwarded_msg_id=0,
-        sender_name=sender_name, original_time=orig_time,
-        forwarded_time=now_str, text_content=text,
-        creator=extract_creator(text), group_index=group_index,
-        res_id=res_ids['total'] if res_ids else None,
-        res_link_id=link_val,
-        res_link_msg_id=res_ids['link_msg'] if res_ids else None,
-        res_preview_id=res_ids['preview'] if res_ids else None,
-        res_text_id=res_ids['text'] if res_ids else None,
-        res_msg_id=res_ids['res_msg'] if res_ids else None
+        forwarded_msg_id=content_fwd_id, forwarded_chat_id=target_entity.id,
+        res_id=res_ids['total'] if res_ids else 0,
+        res_photo_id=res_ids['photo'] if res_ids else 0,
+        res_video_id=res_ids['video'] if res_ids else 0,
+        res_other_id=res_ids['other'] if res_ids else 0,
+        res_text_id=res_ids['text'] if res_ids else 0,
+        header_msg_id=text_header_msg_id or 0
     )
     db.save_global_message(
         chat_id=chat_id, chat_name=source_name, msg_id=message.id,
@@ -1271,7 +1467,7 @@ async def forward_text(client, target_entity, message, source_name, chat_id, db,
         res_msg_id=res_ids['res_msg'] if res_ids else None
     )
     local_records.append({
-        "type": actual_type, "msg_id": message.id,
+        "type": actual_type, "msg_id": message.id, "group": group_index,
         "sender": sender_name, "original_time": orig_time,
         "forwarded_time": now_str, "source": source_name,
         "text": text, "res_ids": res_ids
@@ -1284,4 +1480,36 @@ async def forward_text(client, target_entity, message, source_name, chat_id, db,
 
 
 if __name__ == "__main__":
-    asyncio.run(sync_channels())
+    try:
+        # 预检：打印启动参数，方便在 sub-process 隔离环境中调试
+        print(f"🚀 [INIT] 启动参数: {' '.join(sys.argv)}")
+        asyncio.run(sync_channels())
+    except SystemExit as e:
+        sys.exit(e.code)
+    except Exception as e:
+        import traceback
+        err_msg = f"\n❌ [CRITICAL ERROR] 同步脚本运行失败: {e}"
+        print(err_msg)
+        
+        # 提取 Bot 标识用于日志隔离
+        bot_tag = 'unknown'
+        for i, arg in enumerate(sys.argv):
+            if arg == '--bot' and i + 1 < len(sys.argv):
+                bot_tag = sys.argv[i + 1]
+                break
+        
+        # 写入物理日志文件（按 Bot 隔离，防止双 Bot 并行时互相覆盖）
+        try:
+            log_path = f'data/temp/sync_crash_{bot_tag}.log'
+            with open(log_path, 'w', encoding='utf-8') as f:
+                f.write(f"Timestamp: {datetime.now().isoformat()}\n")
+                f.write(f"Bot: {bot_tag}\n")
+                f.write(f"Command: {' '.join(sys.argv)}\n")
+                f.write(f"Error: {str(e)}\n\n")
+                traceback.print_exc(file=f)
+            print(f"💡 详细错误堆栈已记录至: {log_path}")
+        except:
+            pass
+            
+        traceback.print_exc()
+        sys.exit(1)

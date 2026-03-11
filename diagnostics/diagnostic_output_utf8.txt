@@ -1,0 +1,33 @@
+﻿[INIT] Loading config from: F:\funny_project\tgporncopilot\.env
+馃攳 Diagnostic for Channel ID: -1001395222731 (Normalized: 1395222731)
+馃搳 DB backup_offsets.last_msg_id: 44871
+馃搳 DB sync_offsets.last_msg_id: 0
+馃搳 DB Epoch Min ID: None (Sync count in this epoch: 0)
+馃搳 Computed epoch_start_msg_id: 0
+鉁?Found entity: 绱€閷勫韩-绱€閷勭敤闋婚亾
+
+馃摐 Latest 5 messages in Telegram:
+  - ID: 44994 | Type: photo | Text: '#tkgw1500cc'
+  - ID: 44993 | Type: photo | Text: '#glico_happy'
+  - ID: 44992 | Type: photo | Text: '#kettyamine'
+  - ID: 44991 | Type: photo | Text: '#windybirdo'
+  - ID: 44990 | Type: photo | Text: '#peach_rubber'
+
+馃搱 Telegram Latest ID: 44994
+  馃憠 There ARE 123 potential new messages (by ID gap).
+馃攳 Analyzing messages from 44872 to 44994...
+    - Msg #44872: Type=photo
+    - Msg #44873: Type=photo
+    - Msg #44874: Type=photo
+    - Msg #44875: Type=photo
+    - Msg #44876: Type=photo
+    - Msg #44877: Type=photo
+    - Msg #44878: Type=photo
+    - Msg #44879: Type=photo
+    - Msg #44880: Type=photo
+    - Msg #44881: Type=photo
+
+馃搳 Gap Analysis Results:
+    - Total messages fetched: 110
+    - Skipped: 0
+    - Type distribution: {'photo': 105, 'video': 4, 'text': 1}

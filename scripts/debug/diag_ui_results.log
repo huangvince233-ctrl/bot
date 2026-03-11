@@ -1,0 +1,36 @@
+=== Sync Runs ===
+  ID: 4, Label: TEST-2, Time: 2026-03-06T21:27:08.349721, Test: 1
+  ID: 3, Label: #1, Time: 2026-03-06T21:24:56.208921, Test: 0
+  ID: 1, Label: TEST-1, Time: 2026-03-06T21:22:43.672967, Test: 1
+
+=== Recent Sync Offsets ===
+  ChatID: -5051247857, LastMsgID: 15306, UpdatedAt: 2026-03-06 13:27:10
+    Latest Info (is_test=True): {'run_id': 1, 'label': 'TEST-1', 'time': '2026-03-06T21:22:43.672967'}
+    Latest Info (is_test=False): {'run_id': 3, 'label': '#1', 'time': '2026-03-06T21:24:56.208921'}
+  ChatID: -5051247857, LastMsgID: 15306, UpdatedAt: 2026-03-06 13:25:14
+    Latest Info (is_test=True): {'run_id': 1, 'label': 'TEST-1', 'time': '2026-03-06T21:22:43.672967'}
+    Latest Info (is_test=False): {'run_id': 3, 'label': '#1', 'time': '2026-03-06T21:24:56.208921'}
+  ChatID: 5011841156, LastMsgID: 0, UpdatedAt: None
+    Latest Info (is_test=True): None
+    Latest Info (is_test=False): None
+  ChatID: 5209651248, LastMsgID: 0, UpdatedAt: None
+    Latest Info (is_test=True): None
+    Latest Info (is_test=False): None
+  ChatID: 5018259385, LastMsgID: 0, UpdatedAt: None
+    Latest Info (is_test=True): None
+    Latest Info (is_test=False): None
+  ChatID: 5011841156, LastMsgID: 0, UpdatedAt: None
+    Latest Info (is_test=True): None
+    Latest Info (is_test=False): None
+  ChatID: 5051247857, LastMsgID: 0, UpdatedAt: None
+    Latest Info (is_test=True): {'run_id': 1, 'label': 'TEST-1', 'time': '2026-03-06T21:22:43.672967'}
+    Latest Info (is_test=False): {'run_id': 3, 'label': '#1', 'time': '2026-03-06T21:24:56.208921'}
+  ChatID: 5051247857, LastMsgID: 0, UpdatedAt: None
+    Latest Info (is_test=True): {'run_id': 1, 'label': 'TEST-1', 'time': '2026-03-06T21:22:43.672967'}
+    Latest Info (is_test=False): {'run_id': 3, 'label': '#1', 'time': '2026-03-06T21:24:56.208921'}
+  ChatID: 5209651248, LastMsgID: 0, UpdatedAt: None
+    Latest Info (is_test=True): None
+    Latest Info (is_test=False): None
+  ChatID: -5011841156, LastMsgID: 0, UpdatedAt: None
+    Latest Info (is_test=True): None
+    Latest Info (is_test=False): None

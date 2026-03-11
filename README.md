@@ -12,15 +12,51 @@
 
 ---
 
-## 🏗️ 项目结构
+## 🏗️ 项目结构与架构
 
-```
+本项目采用了模块化设计，确保同步、备份与检索逻辑的清晰隔离。
+
+### 1. 目录结构规范
+
+```bash
 telegramporncopilot/
-├── src/                     # 程序源码 (Sync, Backup, Search, Utils)
-├── data/                    # 动态数据 (SQLite, JSON 快照, 会话)
-├── docs/                    # 文档中心 (元数据, 逻辑说明, 归档报表)
-└── .env                     # 环境变量 (API_ID, BOT_TOKEN 等)
+├── src/                     # 程序源码根目录
+│   ├── sync_mode/           # 🔄 同步模式核心逻辑 (转发与增量控制)
+│   ├── backup_mode/         # 💾 备份模式逻辑 (元数据抓取与快照生成)
+│   ├── search_mode/         # 🔍 搜索模式逻辑 (数据库检索与索引维护)
+│   ├── utils/               # 🛠️ 辅助工具 (离线通知、调试脚本等)
+│   ├── db.py                # 🗄️ 数据库操作核心类 (Sqlite3 封装)
+│   └── search_bot.py        # 🤖 Bot 交互界面主入口
+├── data/                    # 动态数据目录
+│   ├── sessions/            # Telegram 会话文件
+│   ├── archived/            # 机器可读的 JSON 历史快照
+│   └── copilot.db           # Bot 运行的核心 SQLite 数据库
+├── docs/                    # 文档中心
+│   ├── archived/            # 自动生成的离线日志报表 (Markdown)
+│   └── templates/           # 文档模板
+├── .env                     # 密钥与配置 (API_ID, BOT_TOKEN 等)
+└── start_bot.bat            # Windows 一键启动脚本
 ```
+
+### 2. 数据流向概览
+
+```mermaid
+graph TD
+    TG[Telegram API] -->|获取原始消息| Bot(Search Bot / Sync Script)
+    Bot -->|消息转发| Target[目标群组]
+    Bot -->|元数据记录| DB[(SQLite: data/copilot.db)]
+    Bot -->|本地存档| JSON[data/archived/logs/*.json]
+    Bot -->|报告生成| MD[docs/archived/logs/*.md]
+
+    DB -->|支撑| UI[Bot 交互菜单]
+    TG -->|实时同步| UI
+```
+
+### 3. 存储与元数据说明
+
+- **数据库 (data/copilot.db)**：Bot 运行的核心“大脑”。负责 UI 渲染（同步一览、频道列表）、断点记录（`last_offset`）以及资源的全局独立编号管理。
+- **本地 JSON 记录 (data/archived/logs/)**：原始数据的机器可读备份。用于数据恢复或二次分析，包含消息详情、发送者、原始 ID 等。
+- **离线文档 (docs/archived/logs/)**：用户的人工查阅入口。由同步/备份逻辑自动生成的 `.md` 报告。_注意：Bot 界面本身并不读取这些文件，它们仅供人工参考。_
 
 ---
 

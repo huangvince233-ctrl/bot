@@ -1,0 +1,72 @@
+[
+  {
+    "id": -1003323249740,
+    "name": "SM 捆绑/绳艺 调教室",
+    "restricted": true,
+    "is_globally_banned": true,
+    "reasons": [
+      {
+        "platform": "all",
+        "reason": "terms",
+        "text": "This channel can’t be displayed because it violated Telegram's Terms of Service.",
+        "matched_all_terms": true
+      }
+    ]
+  },
+  {
+    "id": -1003077564843,
+    "name": "猎奇 I SM I 重口",
+    "restricted": true,
+    "is_globally_banned": false,
+    "reasons": [
+      {
+        "platform": "ios",
+        "reason": "porn",
+        "text": "This channel can’t be displayed because it was used to spread pornographic content.",
+        "matched_all_terms": false
+      }
+    ]
+  },
+  {
+    "id": -1002974973326,
+    "name": "SM/捆绑/绳艺/调教 字母圈资源汇",
+    "restricted": false,
+    "is_globally_banned": false,
+    "reasons": []
+  },
+  {
+    "id": -1002784674222,
+    "name": "sm萝莉人妻少妇捆绑绳艺播放厅",
+    "restricted": false,
+    "is_globally_banned": false,
+    "reasons": []
+  },
+  {
+    "id": -1001927546930,
+    "name": "sm.重口味",
+    "restricted": true,
+    "is_globally_banned": false,
+    "reasons": [
+      {
+        "platform": "ios",
+        "reason": "porn",
+        "text": "This channel can’t be displayed because it was used to spread pornographic content.",
+        "matched_all_terms": false
+      }
+    ]
+  },
+  {
+    "id": -1001395222731,
+    "name": "紀錄庫-紀錄用頻道",
+    "restricted": true,
+    "is_globally_banned": false,
+    "reasons": [
+      {
+        "platform": "ios",
+        "reason": "porn",
+        "text": "This channel can’t be displayed because it was used to spread pornographic content.",
+        "matched_all_terms": false
+      }
+    ]
+  }
+]

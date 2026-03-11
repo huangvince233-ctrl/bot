@@ -1,0 +1,178 @@
+{
+  "sync_runs": [
+    {
+      "run_id": 1,
+      "is_test": 1,
+      "formal_number": null,
+      "start_time": "2026-03-07T01:10:20.230751",
+      "end_time": "2026-03-07T01:10:37.451936",
+      "duration": "0:00:17",
+      "groups_count": 4,
+      "videos_count": 1,
+      "photos_count": 4,
+      "files_count": 1,
+      "texts_count": 1,
+      "skipped_count": 5,
+      "start_msg_id": 10649,
+      "end_msg_id": 10669,
+      "gifs_count": 1,
+      "links_count": 7,
+      "previews_count": 3,
+      "res_msgs_count": 0,
+      "bot_name": "tgporncopilot",
+      "target_group_id": -1003752126061,
+      "test_number": 1
+    },
+    {
+      "run_id": 2,
+      "is_test": 0,
+      "formal_number": 1,
+      "start_time": "2026-03-07T01:14:51.171913",
+      "end_time": "2026-03-07T01:15:07.763480",
+      "duration": "0:00:16",
+      "groups_count": 4,
+      "videos_count": 1,
+      "photos_count": 4,
+      "files_count": 1,
+      "texts_count": 1,
+      "skipped_count": 5,
+      "start_msg_id": 10670,
+      "end_msg_id": 10690,
+      "gifs_count": 1,
+      "links_count": 7,
+      "previews_count": 3,
+      "res_msgs_count": 0,
+      "bot_name": "tgporncopilot",
+      "target_group_id": -1003752126061,
+      "test_number": null
+    },
+    {
+      "run_id": 3,
+      "is_test": 1,
+      "formal_number": null,
+      "start_time": "2026-03-07T01:22:53.075717",
+      "end_time": "2026-03-07T01:23:09.280444",
+      "duration": "0:00:16",
+      "groups_count": 4,
+      "videos_count": 1,
+      "photos_count": 4,
+      "files_count": 1,
+      "texts_count": 1,
+      "skipped_count": 5,
+      "start_msg_id": 10691,
+      "end_msg_id": 10711,
+      "gifs_count": 1,
+      "links_count": 7,
+      "previews_count": 3,
+      "res_msgs_count": 0,
+      "bot_name": "tgporncopilot",
+      "target_group_id": -1003752126061,
+      "test_number": 2
+    },
+    {
+      "run_id": 4,
+      "is_test": 1,
+      "formal_number": null,
+      "start_time": "2026-03-07T01:23:55.217255",
+      "end_time": "2026-03-07T01:24:12.087318",
+      "duration": "0:00:16",
+      "groups_count": 4,
+      "videos_count": 1,
+      "photos_count": 4,
+      "files_count": 1,
+      "texts_count": 1,
+      "skipped_count": 5,
+      "start_msg_id": 10712,
+      "end_msg_id": 10732,
+      "gifs_count": 1,
+      "links_count": 7,
+      "previews_count": 3,
+      "res_msgs_count": 0,
+      "bot_name": "tgporncopilot",
+      "target_group_id": -1003752126061,
+      "test_number": 3
+    }
+  ],
+  "sync_offsets": [
+    {
+      "chat_id": 5011841156,
+      "is_test": 0,
+      "last_msg_id": 0,
+      "updated_at": null,
+      "last_run_id": null
+    },
+    {
+      "chat_id": 5209651248,
+      "is_test": 0,
+      "last_msg_id": 0,
+      "updated_at": null,
+      "last_run_id": null
+    },
+    {
+      "chat_id": 5018259385,
+      "is_test": 0,
+      "last_msg_id": 0,
+      "updated_at": null,
+      "last_run_id": null
+    },
+    {
+      "chat_id": 5011841156,
+      "is_test": 1,
+      "last_msg_id": 0,
+      "updated_at": null,
+      "last_run_id": null
+    },
+    {
+      "chat_id": 5209651248,
+      "is_test": 1,
+      "last_msg_id": 0,
+      "updated_at": null,
+      "last_run_id": null
+    },
+    {
+      "chat_id": 5051247857,
+      "is_test": 0,
+      "last_msg_id": 888,
+      "updated_at": "2026-03-06 17:51:20",
+      "last_run_id": 99
+    },
+    {
+      "chat_id": 5051247857,
+      "is_test": 1,
+      "last_msg_id": 15306,
+      "updated_at": null,
+      "last_run_id": null
+    }
+  ],
+  "messages_summary": [
+    {
+      "sync_run_id": 1,
+      "original_chat_id": -5051247857,
+      "min_id": 15267,
+      "max_id": 15277,
+      "count": 11
+    },
+    {
+      "sync_run_id": 2,
+      "original_chat_id": -5051247857,
+      "min_id": 15267,
+      "max_id": 15277,
+      "count": 11
+    },
+    {
+      "sync_run_id": 3,
+      "original_chat_id": -5051247857,
+      "min_id": 15267,
+      "max_id": 15277,
+      "count": 11
+    },
+    {
+      "sync_run_id": 4,
+      "original_chat_id": -5051247857,
+      "min_id": 15267,
+      "max_id": 15277,
+      "count": 11
+    }
+  ],
+  "high_id_messages": []
+}

@@ -14,17 +14,21 @@ if sys.platform == "win32":
     except:
         pass
 
-from telethon import TelegramClient, functions, types, utils
+from telethon import TelegramClient, functions, types
+from telethon import utils as telethon_utils
 from dotenv import load_dotenv
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from db import Database
 from sync_mode.sync import extract_creator, classify_message, count_urls
+from utils.config import CONFIG
 
 load_dotenv()
 
-API_ID = int(os.getenv('API_ID'))
-API_HASH = os.getenv('API_HASH')
+# 通过全局配置管理，支持双机器人身份调用
+API_ID = CONFIG['api_id']
+API_HASH = CONFIG['api_hash']
 SESSION_NAME = 'data/sessions/copilot_user'
+MANAGED_FOLDERS = CONFIG['managed_folders']
 
 db = Database('data/copilot.db')
 
@@ -41,6 +45,19 @@ def get_sender_name(message):
 def safe_dirname(name):
     if not name: return "未命名"
     return re.sub(r'[<>:"/\\|?*]', '_', str(name)).strip()
+
+def channel_archive_dirname(source_name, chat_id):
+    """为频道生成稳定目录名，避免同名频道互相覆盖。"""
+    safe_source = safe_dirname(source_name)
+    norm_id = str(abs(int(chat_id))) if chat_id is not None else '0'
+    return f"{safe_source}_{norm_id}"
+
+def legacy_channel_archive_dirnames(source_name):
+    """兼容旧版 B1 目录：仅使用频道名，不带 chat_id。"""
+    safe_source = safe_dirname(source_name)
+    candidates = [safe_source]
+    # 某些旧文件可能直接使用原始名字经过最小清洗；这里保守保留单一 safe 名称即可
+    return [c for c in candidates if c]
 
 def rename_channel_archives(old_name, new_name):
     """自动将硬盘上旧的频道名称目录重命名为新名称"""
@@ -95,9 +112,9 @@ async def get_fwd_source_name(client, message):
             return f"ID: {fwd.from_id}"
     return None
 
-# 进度与控制文件
-PROGRESS_FILE = 'data/temp/backup_progress.json'
-STOP_FLAG = 'data/temp/stop_backup.flag'
+# 进度与控制文件 (基于 Bot 隔离)
+PROGRESS_FILE = f'data/temp/backup_progress_{CONFIG["app_name"]}.json'
+STOP_FLAG = f'data/temp/stop_backup_{CONFIG["app_name"]}.flag'
 
 def update_progress(data):
     """写入进度到 JSON 文件供机器人读取"""
@@ -111,18 +128,28 @@ def get_historical_speed():
     try:
         if os.path.exists('data/backup_speed.json'):
             with open('data/backup_speed.json', 'r') as f:
-                data = json.load(f)
-                return max(100, data.get('speed_msgs_per_min', 4000))
+                content = f.read().strip()
+                if content:
+                    data = json.loads(content)
+                    speed = data.get('speed_msgs_per_min', 4000)
+                    # [FIX-v6] 启动时校准历史速度，防止被极速（如 50000+）污染
+                    if speed > 10000: return 6000
+                    return max(100, speed)
     except: pass
     return 4000
 
 def update_historical_speed(speed):
     try:
-        avg_speed = speed
+        # [FIX-v4] 增加速度上限保护，防止因瞬间完成导致的时间预估失真（如 60000 msgs/min）
+        # 即使是极速状态，由于 Telegram API 限制，4000-8000 是比较真实的范围
+        capped_speed = min(speed, 10000) 
+        avg_speed = capped_speed
         if os.path.exists('data/backup_speed.json'):
             with open('data/backup_speed.json', 'r') as f:
-                old_speed = json.load(f).get('speed_msgs_per_min', 4000)
-            avg_speed = int((old_speed + speed) / 2)
+                content = f.read().strip()
+                if content:
+                    old_speed = json.loads(content).get('speed_msgs_per_min', 4000)
+                    avg_speed = int((old_speed + capped_speed) / 2)
         with open('data/backup_speed.json', 'w') as f:
             json.dump({'speed_msgs_per_min': max(100, avg_speed)}, f)
     except: pass
@@ -131,16 +158,31 @@ def is_stopped():
     """检查是否收到停止信号"""
     return os.path.exists(STOP_FLAG)
 
-async def get_total_message_count(client, entity):
-    """估算频道消息总数"""
+async def get_total_message_count(client, entity, min_id=0):
+    """估算频道消息总数。返回 (count, is_exact)：
+       is_exact=True 精确值，is_exact=False 为 ID 差值估算（需标注 ~）。"""
     try:
         res = await client(functions.messages.GetHistoryRequest(
             peer=entity, offset_id=0, offset_date=None, 
             add_offset=0, limit=0, max_id=0, min_id=0, hash=0
         ))
-        return res.count
+        total_full = res.count
+
+        if min_id > 0:
+            EXACT_LIMIT = 2000
+            new_msgs = await client.get_messages(entity, limit=EXACT_LIMIT, min_id=min_id)
+            actual_count = len(new_msgs)
+            if actual_count < EXACT_LIMIT:
+                return (actual_count, True)   # 精确计数
+            else:
+                latest_id = new_msgs[0].id if new_msgs else min_id
+                delta_est = max(0, latest_id - min_id)
+                return (min(delta_est, total_full), False)  # 估算值
+
+        return (total_full, True)
     except:
-        return 0
+        return (0, True)
+
 
 def build_id_path_index():
     """扫描 metadata 文件夹，建立 ID -> (Folder, Name) 索引"""
@@ -164,7 +206,7 @@ def build_id_path_index():
                     pass
     return idx
 
-def get_latest_backup_data(root_dir, safe_source_name):
+def get_latest_backup_data(root_dir, channel_dir_name):
     """从指定频道目录中找到最新的、非残缺的备份 JSON 文件及其内容"""
     if not os.path.exists(root_dir): return None, []
     
@@ -174,7 +216,7 @@ def get_latest_backup_data(root_dir, safe_source_name):
     # 兼容带编号前缀的文件，如 backup_#B1_CHANNEL_20260228_150224.json
     # 或原始格式 CHANNEL_20260228_150224.json
     # [IMPORTANT] 严格排除所有标记了 _PARTIAL 的备份
-    pattern = re.compile(rf".*{re.escape(safe_source_name)}_(\d{{8}}_\d{{6}})\.json$")
+    pattern = re.compile(rf".*{re.escape(channel_dir_name)}_(\d{{8}}_\d{{6}})\.json$")
     
     for f in os.listdir(root_dir):
         if '_PARTIAL' in f: continue
@@ -197,16 +239,234 @@ def get_latest_backup_data(root_dir, safe_source_name):
             
     return None, []
 
-async def backup_channel(client, source, is_test=False, global_stats=None, run_label=None):
+def load_historical_records_fallback(source_name, chat_id):
+    """跨全部备份目录兜底查找该频道最新历史 JSON，避免因 folder 变化/旧路径问题导致历史未并入。"""
+    backups_root = os.path.join('data', 'archived', 'backups')
+    if not os.path.isdir(backups_root):
+        return None, []
+
+    candidates = [channel_archive_dirname(source_name, chat_id)] + legacy_channel_archive_dirnames(source_name)
+    best_file = None
+    best_data = []
+    best_mtime = 0
+
+    for folder in os.listdir(backups_root):
+        folder_root = os.path.join(backups_root, folder)
+        if not os.path.isdir(folder_root):
+            continue
+        for cand in candidates:
+            hist_root = os.path.join(folder_root, cand)
+            if not os.path.isdir(hist_root):
+                continue
+            latest_path, historical_data = get_latest_backup_data(hist_root, cand)
+            if latest_path and os.path.exists(latest_path):
+                mtime = os.path.getmtime(latest_path)
+                if mtime > best_mtime:
+                    best_mtime = mtime
+                    best_file = latest_path
+                    best_data = historical_data if isinstance(historical_data, list) else []
+    return best_file, best_data
+
+def iter_channel_backup_files(backups_root, source_name, chat_id, include_partial=False):
+    """遍历该频道在全部备份目录下的所有 JSON 快照文件。"""
+    if not os.path.isdir(backups_root):
+        return
+
+    candidate_dirs = [channel_archive_dirname(source_name, chat_id)] + legacy_channel_archive_dirnames(source_name)
+    seen_files = set()
+
+    for folder in os.listdir(backups_root):
+        folder_root = os.path.join(backups_root, folder)
+        if not os.path.isdir(folder_root):
+            continue
+        for cand in candidate_dirs:
+            channel_root = os.path.join(folder_root, cand)
+            if not os.path.isdir(channel_root):
+                continue
+            for file_name in os.listdir(channel_root):
+                if not file_name.lower().endswith('.json'):
+                    continue
+                if (not include_partial) and '_PARTIAL' in file_name:
+                    continue
+                full_path = os.path.join(channel_root, file_name)
+                if full_path in seen_files or not os.path.isfile(full_path):
+                    continue
+                seen_files.add(full_path)
+                yield full_path
+
+def build_full_historical_snapshot(source_name, chat_id):
+    """聚合该频道全部历史 backup 快照，去重后得到完整时间线。
+
+    设计目标：即使上一份最新快照本身残缺，也要尽可能从更早/其他目录快照中拼回完整基线，
+    让新的 Bn 文件始终成为“当前已知最完整快照”。
+    """
+    backups_root = os.path.join('data', 'archived', 'backups')
+    best_by_msg_id = {}
+    latest_source_path = None
+    latest_source_mtime = 0
+
+    for full_path in iter_channel_backup_files(backups_root, source_name, chat_id, include_partial=False):
+        try:
+            with open(full_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        except Exception as e:
+            print(f"  ⚠️ 读取历史快照失败 {full_path}: {e}")
+            continue
+
+        if not isinstance(data, list):
+            continue
+
+        try:
+            mtime = os.path.getmtime(full_path)
+        except Exception:
+            mtime = 0
+
+        if mtime > latest_source_mtime:
+            latest_source_mtime = mtime
+            latest_source_path = full_path
+
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            msg_id = int(item.get('msg_id', 0) or 0)
+            if msg_id <= 0:
+                continue
+
+            # [FIX] 解决历史快照中 res_ids 缺失导致的 MD 统计横杠问题
+            # 如果历史 JSON 里没编号，尝试去数据库捞一把
+            res_ids = item.get('res_ids')
+            is_empty = not res_ids or all(v is None or v == [] for v in res_ids.values())
+            if is_empty:
+                db_res = db.get_message_res_ids(chat_id, msg_id)
+                if db_res:
+                    item['res_ids'] = db_res
+
+            prev = best_by_msg_id.get(msg_id)
+            if not prev:
+                best_by_msg_id[msg_id] = item
+                continue
+
+            prev_score = len(json.dumps(prev, ensure_ascii=False, sort_keys=True))
+            cur_score = len(json.dumps(item, ensure_ascii=False, sort_keys=True))
+            if cur_score >= prev_score:
+                best_by_msg_id[msg_id] = item
+
+    ordered = sorted(best_by_msg_id.values(), key=lambda x: int(x.get('msg_id', 0) or 0), reverse=True)
+    return latest_source_path, ordered
+
+def merge_backup_records(new_records, historical_records):
+    """合并新旧记录并按 msg_id 去重，输出最新消息置顶的完整快照。"""
+    merged = {}
+
+    for item in historical_records or []:
+        if not isinstance(item, dict):
+            continue
+        msg_id = int(item.get('msg_id', 0) or 0)
+        if msg_id > 0:
+            merged[msg_id] = item
+
+    for item in new_records or []:
+        if not isinstance(item, dict):
+            continue
+        msg_id = int(item.get('msg_id', 0) or 0)
+        if msg_id > 0:
+            merged[msg_id] = item
+
+    return sorted(merged.values(), key=lambda x: int(x.get('msg_id', 0) or 0), reverse=True)
+
+def find_best_history_dir(backups_root, folder_name, source_name, chat_id):
+    """优先查找新目录名；若不存在，则兼容旧版不带 chat_id 的目录。"""
+    folder_root = os.path.join(backups_root, safe_dirname(folder_name))
+    if not os.path.isdir(folder_root):
+        return None, None
+
+    new_dir = channel_archive_dirname(source_name, chat_id)
+    new_path = os.path.join(folder_root, new_dir)
+    if os.path.isdir(new_path):
+        return new_path, new_dir
+
+    for legacy_dir in legacy_channel_archive_dirnames(source_name):
+        legacy_path = os.path.join(folder_root, legacy_dir)
+        if os.path.isdir(legacy_path):
+            return legacy_path, legacy_dir
+
+    return None, None
+
+def migrate_legacy_history_dir(backups_root, docs_root, folder_name, source_name, chat_id):
+    """若发现旧版不带 chat_id 的目录，则尝试迁移到新目录名，保证后续增量沿用同一目录。"""
+    folder_safe = safe_dirname(folder_name)
+    target_dir = channel_archive_dirname(source_name, chat_id)
+
+    data_folder_root = os.path.join(backups_root, folder_safe)
+    docs_folder_root = os.path.join(docs_root, folder_safe)
+
+    if not os.path.isdir(data_folder_root):
+        return
+
+    for legacy_dir in legacy_channel_archive_dirnames(source_name):
+        if legacy_dir == target_dir:
+            continue
+
+        old_data = os.path.join(data_folder_root, legacy_dir)
+        new_data = os.path.join(data_folder_root, target_dir)
+        if os.path.isdir(old_data) and not os.path.isdir(new_data):
+            try:
+                os.rename(old_data, new_data)
+                print(f"  🔄 迁移旧备份目录: {old_data} -> {new_data}")
+            except Exception as e:
+                print(f"  ⚠️ 迁移旧备份目录失败 {old_data}: {e}")
+
+        old_docs = os.path.join(docs_folder_root, legacy_dir)
+        new_docs = os.path.join(docs_folder_root, target_dir)
+        if os.path.isdir(old_docs) and not os.path.isdir(new_docs):
+            try:
+                os.rename(old_docs, new_docs)
+                print(f"  🔄 迁移旧文档目录: {old_docs} -> {new_docs}")
+            except Exception as e:
+                print(f"  ⚠️ 迁移旧文档目录失败 {old_docs}: {e}")
+
+def get_last_recorded_id(chat_id, source_name, folder_name, is_test):
+    """
+    [FIX-v2] 综合探测断点：优先查找数据库，若无则遍历所有备份目录查找。
+    不再依赖 folder_name 做文件系统查询，兼容旧版/跨文件夹的备份文件。
+    """
+    # 1. 查数据库 backup_offsets — 不依赖 folder_name，始终可靠
+    last_id = db.get_backup_offset(chat_id, is_test=is_test)
+    if last_id > 0:
+        return last_id
+    
+    # 2. 遍历 backups 下所有文件夹查找匹配的频道备份 (兼容旧版程序)
+    backups_root = os.path.join('data', 'archived', 'backups')
+    if not os.path.exists(backups_root):
+        return 0
+    
+    best_id = 0
+    for folder in os.listdir(backups_root):
+        hist_root, hist_dir_name = find_best_history_dir(backups_root, folder, source_name, chat_id)
+        if not hist_root or not os.path.isdir(hist_root):
+            continue
+        _, historical_data = get_latest_backup_data(hist_root, hist_dir_name)
+        if historical_data and isinstance(historical_data, list):
+            max_id = max((m.get('msg_id', 0) for m in historical_data), default=0)
+            if max_id > best_id:
+                best_id = max_id
+    
+    return best_id
+
+async def backup_channel(client, source, is_test=True, global_stats=None, run_label=None, folder_name=None, entity=None):
     """备份单个频道，最新消息置顶"""
-    print(f"📡 正在拉取备份目标: {source}...")
+    # [FIX-v6] 如果外部已解析 entity，则直接使用，节省一次 RPC
+    source_name = getattr(entity, 'title', str(source)) if entity else str(source)
+    print(f"📡 正在拉取备份目标: {source_name}...")
     
     is_partial = False
+    historical_records = []
     
     try:
-        # Resolve entity: 尝试转为 int 提高识别率
-        source_id = int(source) if (isinstance(source, str) and (source.isdigit() or source.startswith('-'))) else source
-        entity = await client.get_entity(source_id)
+        if not entity:
+            # Resolve entity: 尝试转为 int 提高识别率
+            source_id = int(source) if (isinstance(source, str) and (source.isdigit() or source.startswith('-'))) else source
+            entity = await client.get_entity(source_id)
         # 检查全平台封禁 vs 局部受限
         restriction_reasons = getattr(entity, 'restriction_reason', []) or []
         is_globally_banned = any(
@@ -221,7 +481,7 @@ async def backup_channel(client, source, is_test=False, global_stats=None, run_l
             print(f"  ⚠️ [警告] 频道被 Telegram 标记为局部受限，仍尝试访问...")
             # 局部受限仍可访问，不跳过
             
-        chat_id = utils.get_peer_id(entity)
+        chat_id = telethon_utils.get_peer_id(entity)
         current_title = getattr(entity, 'title', None) or getattr(entity, 'username', '') or str(chat_id)
         
         # [NEW] 检查并执行可能的跨系统改名，保持与历史记录连贯
@@ -251,39 +511,62 @@ async def backup_channel(client, source, is_test=False, global_stats=None, run_l
                 if folder_name != "未分类": break
         except: pass
         
-        # [NEW] 增量备份检测 (Incremental Detection)
-        historical_records = []
-        last_recorded_id = 0
-        root_dir_base = os.path.join('data', 'archived', 'backups', safe_dirname(folder_name), safe_dirname(source_name))
+        # [FIX-v4] 强制进行增量探测与分母校准，无论是否显式传递 --incremental
+        # 因为 UI 端显示的进度条逻辑是基于 total_raw_estimate 的全局汇总
+        last_recorded_id = get_last_recorded_id(chat_id, source_name, folder_name, is_test)
         
-        if not (global_stats and global_stats.get('full_scan')) and os.path.exists(root_dir_base):
-            # 找到最新的 JSON 文件并提取断点
-            latest_json, records = get_latest_backup_data(root_dir_base, safe_dirname(source_name))
-            if latest_json:
-                historical_records = records
-                last_recorded_id = max(r['msg_id'] for r in historical_records) if historical_records else 0
-                print(f"  📈 发现历史备份: 共 {len(historical_records)} 条，最新 ID: {last_recorded_id}")
+        # 只有在 global_stats 存在时才进行“分母修正”
+        if global_stats:
+            # 校准逻辑：如果探测到断点且非强制全量扫描
+            should_calibrate = not global_stats.get('full_scan')
+            if last_recorded_id > 0 and should_calibrate:
+                delta, _is_exact = await get_total_message_count(client, entity, min_id=last_recorded_id)
+                old_local_estimate = global_stats.get('current_channel_total_raw', 0)
                 
-                # [NEW] 动态校准当前频道的预计任务量 (Y in X/Y)
-                if global_stats:
-                    old_est = global_stats.get('current_channel_total_raw', 0)
-                    total_c = await get_total_message_count(client, entity) 
-                    # 修正：预计增量 = 总消息数 - 已备份条数
-                    delta = max(0, total_c - len(historical_records))
-                    global_stats['current_channel_total_raw'] = delta
-                    global_stats['total_raw_estimate'] += (delta - old_est)
-                    update_progress(global_stats)
+                # 纠正全局分母：从总估值中扣除该频道被“节省”掉的部分
+                diff = old_local_estimate - delta
+                if diff > 0:
+                    global_stats['total_raw_estimate'] = max(0, global_stats['total_raw_estimate'] - diff)
+                    # print(f"  📉 进度条校准: {source_name} 节省 {diff} 条，全局剩余 {global_stats['total_raw_estimate']}")
+                
+                global_stats['current_channel_total_raw'] = delta
+                update_progress(global_stats)
+            elif last_recorded_id > 0:
+                print(f"  ℹ️ 已探测断点 #{last_recorded_id}, 但当前为全量任务，不缩小分母。")
 
-        # 决定抓取起点
+        # 决定抓取起点 - 这里的优先级依然是：用户指定的 Epoch > 断点
         fetch_min_id = max(last_recorded_id, db.get_epoch_start_msg_id(chat_id, is_test=is_test))
         if fetch_min_id > last_recorded_id:
             print(f"  📅 纪元锁定: 仅拉取 msg #{fetch_min_id} 之后的新消息。")
         elif fetch_min_id > 0:
             print(f"  📅 增量模式: 继续拉取 msg #{fetch_min_id} 之后的消息。")
         
+        # [ADD] 核心修复：加载历史数据，确保最终产出包含之前的全部记录
+        if fetch_min_id > 0:
+            migrate_legacy_history_dir(
+                os.path.join('data', 'archived', 'backups'),
+                os.path.join('docs', 'archived', 'backups'),
+                folder_name,
+                source_name,
+                chat_id,
+            )
+            latest_path, historical_records = build_full_historical_snapshot(source_name, chat_id)
+            if (not historical_records) and fetch_min_id > 0:
+                # 兜底兼容旧逻辑：至少拿到一份最新快照路径帮助定位问题
+                latest_path, historical_records = load_historical_records_fallback(source_name, chat_id)
+            if latest_path:
+                print(f"  📂 已载入历史记录: {os.path.basename(latest_path)} (共 {len(historical_records)} 条)")
+            else:
+                historical_records = []
+
         records = []
         last_grouped_id = None
+        max_seen_msg_id = fetch_min_id  # [FIX-v10] track true max msg_id seen by API (incl. skip)
         async for message in client.iter_messages(entity, min_id=fetch_min_id, reverse=True):
+            # [FIX-v10] record max ID before classify - skip messages also advance the scan cursor
+            if message.id > max_seen_msg_id:
+                max_seen_msg_id = message.id
+            
             text = (message.text or "").strip()
             
             # 使用与 sync.py 完全一致的分类逻辑
@@ -337,7 +620,7 @@ async def backup_channel(client, source, is_test=False, global_stats=None, run_l
                     if len(actor) < 10: # 防止抓到长段落
                         db.add_entity_candidate(actor, "actor")
             
-            if len(records) % 100 == 0:
+            if len(records) % 5 == 0:
                 # 检查停止信号
                 if is_stopped():
                     print(f"🛑 收到停止信号，正在保存 {source_name} 已扫描的 {len(records)} 条消息...")
@@ -375,12 +658,14 @@ async def backup_channel(client, source, is_test=False, global_stats=None, run_l
                     else:
                         blended_speed = hist_speed
                         
+                    # [FIX-v2] 下限保护：确保分母不会小于已扫描数
+                    global_stats['total_raw_estimate'] = max(global_stats['total_raw_estimate'], global_stats['current_raw_count'])
                     remaining_raw = max(0, global_stats['total_raw_estimate'] - global_stats['current_raw_count'])
                     global_stats['estimated_total_time_minutes'] = round(remaining_raw / max(1, blended_speed), 1)
 
                     # 命令行频率控制
                     now = time.time()
-                    if now - global_stats.get('last_cli_print', 0) >= 30:
+                    if now - global_stats.get('last_cli_print', 0) >= 10:
                         print(f"  📦 进度: {source_name} 已扫描 {len(records)}/{global_stats['current_channel_total_raw'] if global_stats else '?'} 原始记录 "
                               f"({(len(records)/(global_stats['current_channel_total_raw'] if global_stats['current_channel_total_raw']>0 else 1)*100):.1f}%) "
                               f"预计还需 {global_stats['estimated_total_time_minutes']} 分钟")
@@ -391,37 +676,95 @@ async def backup_channel(client, source, is_test=False, global_stats=None, run_l
 
         if not records and not historical_records:
             print(f"ℹ️ {source_name} 无任何消息记录，跳过。")
-            return {"id": chat_id, "name": source_name, "count": 0, "new_count": 0, "raw_count": 0, "raw_new_count": 0, "status": "skipped", "ranges": {"all": "-", "video": "-", "photo": "-", "text": "-"}}
+            return {"id": chat_id, "name": source_name, "count": 0, "new_count": 0, "scanned_group_count": 0, "raw_count": 0, "raw_new_count": 0, "status": "skipped", "ranges": {"all": "-", "video": "-", "photo": "-", "text": "-"}}
 
         # [FIX] 即使无新消息 (records为空)，只要有 historical_records，我们依然执行保存逻辑
         # 这样会生成一个新的带时间戳的文件，包含之前的全部历史，符合用户“每执行必生成”的预期
-        if not records:
+        if not records and max_seen_msg_id <= fetch_min_id:
             print(f"ℹ️ {source_name} 没有新消息追加，仅生成新的历史快照。")
+        elif not records:
+            # [FIX-v10] 有新消息但全部被 skip，仍需推进断点以免下次重复扫描
+            print(f"ℹ️ {source_name} 没有新的有效消息 (扫描到 #{max_seen_msg_id}, 全部为 skip)。")
+            if not is_partial:
+                db.update_backup_offset(chat_id, max_seen_msg_id, is_test=is_test)
+                print(f"  📌 断点已推进: #{max_seen_msg_id} (skip-only)")
         else:
             print(f"✅ {source_name} 抓取到 {len(records)} 条新消息，正在合并写入...")
-            # [NEW] 仅在未中断的情况下更新预览断点
+            # [FIX-v10] 使用 max_seen_msg_id 确保断点覆盖所有已扫描消息
             if not is_partial:
-                db.update_backup_offset(chat_id, max(m['msg_id'] for m in records), is_test=is_test)
+                new_offset = max(max_seen_msg_id, max(m['msg_id'] for m in records))
+                db.update_backup_offset(chat_id, new_offset, is_test=is_test)
+                print(f"  📌 断点已更新: #{new_offset}")
             else:
                 print(f"  ⚠️ 任务被中断，保留上一个数据库断点。")
 
-        # 归并逻辑：[最新增量(按时间倒序)] + [历史记录]
+        # 归并逻辑：新的 Bn 始终输出“完整时间线快照”，而不是仅保存本轮增量补丁
         records.reverse()
-        final_records = records + historical_records
+        final_records = merge_backup_records(records, historical_records)
         
+        # [FIX] 统一给 final_records 里的缺失 res_ids 的条目分配 ID
+        # 为了保证 ID 会从旧到新顺延递增，我们对 final_records 进行反向遍历（即按时间正序）
+        last_grouped_id_pass = None
+        
+        # [优化] 计算需要修复的数量
+        need_fix_count = sum(1 for item in final_records if not item.get('res_ids') or all(v is None or v == [] for v in item.get('res_ids', {}).values()))
+        if need_fix_count > 0:
+            print(f"  🛠️ 正在为 {need_fix_count} 个陈旧记录进行编号补全(防阻塞模式)...")
+            
+        fixed_count = 0
+        for item in reversed(final_records):
+            res_ids = item.get('res_ids')
+            is_empty = not res_ids or all(v is None or v == [] for v in res_ids.values())
+            if is_empty:
+                cid = chat_id
+                mid = int(item.get('msg_id', 0) or 0)
+                if mid <= 0: continue
+                mtype = item.get('type')
+                ucount = item.get('url_count', 0)
+                
+                # 尝试从库里拿，刚才 db.py 已经修正了，如果拿到空会由于下面这个检查不进入分支
+                db_res = db.get_message_res_ids(cid, mid)
+                if db_res and any(v is not None and v != [] for v in db_res.values()):
+                    item['res_ids'] = db_res
+                else:
+                    cur_grid = item.get('media_group_id')
+                    is_new_msg = (cur_grid is None or cur_grid != last_grouped_id_pass)
+                    last_grouped_id_pass = cur_grid
+                    
+                    new_ids = db.assign_resource_ids(
+                        cid, mid, mtype, 
+                        is_test=is_test, 
+                        url_count=ucount, 
+                        is_new_msg=is_new_msg,
+                        commit=False  # [不频繁提交防止卡死主线程]
+                    ) or {}
+                    item['res_ids'] = new_ids
+                    
+                    fixed_count += 1
+                    # 每补配 500 个编号让出一次事件循环，并且打印一次进度
+                    if fixed_count % 500 == 0:
+                        db.conn.commit()  # 落盘一部分
+                        print(f"    ➡️ 已回填补齐 {fixed_count} / {need_fix_count} 条...")
+                        await asyncio.sleep(0.01)
+
+        if fixed_count > 0:
+            db.conn.commit()
+            print(f"  ✅ 历史编号回填完成！共修补 {fixed_count} 条记录。")
+
         # [REMOVE] Early return was here, preventing file save
 
         # 归档路径 (data 为 JSON, docs 为 MD)
-        root_dir = os.path.join('data', 'archived', 'backups', safe_dirname(folder_name), safe_dirname(source_name))
-        docs_dir = os.path.join('docs', 'archived', 'backups', safe_dirname(folder_name), safe_dirname(source_name))
+        channel_dir = channel_archive_dirname(source_name, chat_id)
+        root_dir = os.path.join('data', 'archived', 'backups', safe_dirname(folder_name), channel_dir)
+        docs_dir = os.path.join('docs', 'archived', 'backups', safe_dirname(folder_name), channel_dir)
         os.makedirs(root_dir, exist_ok=True)
         os.makedirs(docs_dir, exist_ok=True)
         
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         label_prefix = f"{run_label}_" if run_label else ""
         partial_tag = "_PARTIAL" if is_partial else ""
-        json_file = os.path.join(root_dir, f"backup_{label_prefix}{safe_dirname(source_name)}_{timestamp}{partial_tag}.json")
-        md_file = os.path.join(docs_dir, f"{label_prefix}{safe_dirname(source_name)}_{timestamp}{partial_tag}.md")
+        json_file = os.path.join(root_dir, f"backup_{label_prefix}{channel_dir}_{timestamp}{partial_tag}.json")
+        md_file = os.path.join(docs_dir, f"{label_prefix}{channel_dir}_{timestamp}{partial_tag}.md")
         
         with open(json_file, 'w', encoding='utf-8') as f:
             json.dump(final_records, f, ensure_ascii=False, indent=2)
@@ -437,8 +780,8 @@ async def backup_channel(client, source, is_test=False, global_stats=None, run_l
                         print(f"  🗑️ 已清理过期备份: {old_file}")
                     except: pass
 
-        prune_backups(root_dir, f"backup_{safe_dirname(source_name)}_", ".json")
-        prune_backups(docs_dir, f"{safe_dirname(source_name)}_", ".md")
+        prune_backups(root_dir, "backup_", ".json")
+        prune_backups(docs_dir, "", ".md")
 
         # 统计分析 (基于全量记录)
         v_c = sum(1 for m in final_records if m['type'] == 'video')
@@ -466,7 +809,7 @@ async def backup_channel(client, source, is_test=False, global_stats=None, run_l
                 temp_g, last_grid = [], None
         if temp_g: groups.append(temp_g)
 
-        # [FIX] 补充之前意外删掉的 groups_new 计算逻辑 (基于纯新记录，用于上报新增组数)
+        # [FIX] 补充之前意外删掉的 groups_new 计算逻辑 (基于纯新记录，用于上报新增/扫描组数)
         groups_new = []
         temp_g_new = []
         last_grid_new = None
@@ -482,6 +825,8 @@ async def backup_channel(client, source, is_test=False, global_stats=None, run_l
                 groups_new.append([m])
                 temp_g_new, last_grid_new = [], None
         if temp_g_new: groups_new.append(temp_g_new)
+        scanned_groups_this_run = len(groups_new)
+        saved_groups_this_run = len(groups_new)
 
         # [NEW] 统计编号范围 (基于全量记录)
         id_ranges = {}
@@ -632,29 +977,40 @@ async def backup_channel(client, source, is_test=False, global_stats=None, run_l
         if is_stopped():
             print(f"⚠️ {source_name} 备份已中断（部分保存），新抓取 {len(records)} 条，总计 {len(final_records)} 条。")
             return {
-                "id": chat_id, "name": source_name, 
-                "count": len(final_records),
-                "new_count": len(records),
+                "id": chat_id, "name": source_name,
+                "count": num_total_groups,
+                "new_count": saved_groups_this_run,
+                "scanned_group_count": scanned_groups_this_run,
+                "saved_group_count": saved_groups_this_run,
+                "raw_count": len(final_records),
+                "raw_new_count": len(records),
                 "status": "interrupted",
+                "folder": folder_name or "未分类",
+                "json_file": json_file,
+                "md_file": md_file,
                 "ranges": {
                     "all": r_all, "video": r_vid, "photo": r_pho, "text": r_txt
                 }
             }
             
-        # [NEW] 备份成功后，在数据库中记录最后的断点 ID 和时间
-        try:
-            db.update_backup_offset(chat_id, final_records[0]['msg_id'] if final_records else 0)
-        except Exception as offset_e:
-            print(f"  ⚠️ 记录数据库断点失败: {offset_e}")
+        # [FIX-v10] 移除冗余的第二次断点更新 — 断点仅在上方 records 非空时写入一次
+        # 旧逻辑在 records 为空时会重写 last_recorded_id（旧值），无意义且可能掩盖问题
 
         print(f"✅ {source_name} 备份完成！(新抓取 {len(records)} 条，总计 {len(final_records)} 条)")
+        # completed:
+        # - saved_group_count / new_count: 最终成功保存的增量组数
+        # - scanned_group_count: 本轮扫描命中的增量组数
+        # - count/raw_count: 完整快照总量
         return {
-            "id": chat_id, "name": source_name, 
+            "id": chat_id, "name": source_name,
             "count": num_total_groups,    # 使用用户偏好的组数
-            "new_count": len(groups_new), # 本次新增的组数
+            "new_count": saved_groups_this_run,
+            "scanned_group_count": scanned_groups_this_run,
+            "saved_group_count": saved_groups_this_run,
             "raw_count": len(final_records),
             "raw_new_count": len(records),
             "status": "completed",
+            "folder": folder_name or "未分类",
             "json_file": json_file,
             "md_file": md_file,
             "ranges": {
@@ -680,12 +1036,15 @@ async def main():
     parser.add_argument('--test', action='store_true', help='Test Mode')
     parser.add_argument('--incremental', action='store_true', help='Incremental Mode')
     parser.add_argument('--run-id', type=int, help='Current run ID')
+    parser.add_argument('--channel', type=int, help='Telegram channel ID')
     parser.add_argument('--run-label', help='Current run label (e.g. B1)')
+    parser.add_argument('--bot', type=str, default='tgporncopilot', help='指定触发的 Bot 身份')
     args = parser.parse_args()
-
+    
     async with TelegramClient(SESSION_NAME, API_ID, API_HASH) as client:
-        # 预热实体缓存
-        await client.get_dialogs()
+        # 预热实体缓存并获取活跃对话列表
+        dialogs = await client.get_dialogs()
+        active_dialog_ids = {d.id for d in dialogs}
         
         targets = []
         if args.ids: targets = [x.strip() for x in args.ids.split(',') if x.strip()]
@@ -695,15 +1054,28 @@ async def main():
             seen = set()
             for f in getattr(filters, 'filters', []):
                 if not hasattr(f, 'include_peers'): continue
+                
+                # [FIX-v9.11] 检查文件夹名称是否在当前 Bot 的管辖范围内
+                title = getattr(f, 'title', None)
+                f_name = (title.text if hasattr(title, 'text') else str(title)) if title else ""
+                
+                # [NEW] 支持 '*' 通配符，表示管理所有文件夹
+                if "*" not in MANAGED_FOLDERS and "ALL" not in [m.upper() for m in MANAGED_FOLDERS]:
+                    if f_name not in MANAGED_FOLDERS:
+                        continue
+                
                 # include_peers + pinned_peers 都要覆盖，防止遗漏
                 all_peers = list(getattr(f, 'include_peers', [])) + list(getattr(f, 'pinned_peers', []))
                 for peer in all_peers:
                     try:
-                        signed_id = utils.get_peer_id(peer)
+                        signed_id = telethon_utils.get_peer_id(peer)
                     except:
                         pid = getattr(peer, 'channel_id', getattr(peer, 'chat_id', getattr(peer, 'user_id', None)))
                         signed_id = pid
-                    if signed_id and signed_id not in seen:
+                    
+                    # [FIX] 核心修复：只有 ID 在活跃对话列表中，才加入备份目标
+                    # 这能过滤掉已经在电报里退群、但文件夹设置里还残留的“幽灵 ID”
+                    if signed_id and signed_id not in seen and signed_id in active_dialog_ids:
                         seen.add(signed_id); targets.append(signed_id)
 
         
@@ -715,7 +1087,7 @@ async def main():
             run_id = args.run_id
             label = args.run_label or db.get_backup_label(run_id)
         else:
-            run_id = db.start_backup_run(mode=args.mode, is_incremental=args.incremental, is_test=args.test)
+            run_id = db.start_backup_run(mode=args.mode, is_incremental=args.incremental, is_test=args.test, bot_name=CONFIG['app_name'])
             label = db.get_backup_label(run_id)
         start_time = time.time()
         print(f"🚀 开始备份任务 {label} ...")
@@ -726,81 +1098,103 @@ async def main():
         # 初始化全局进度统计
         total_msg_estimate = 0
         target_entities = []
-        for t in targets:
+        
+        # [FIX-v7] 预扫阶段也提供进度反馈，防止 78 个频道让用户干等
+        temp_stats = {
+            'phase': 'prescan',          # 识别预扫阶段
+            'prescan_done': 0,           # 已完成预扫的频道数
+            'total_raw_estimate': 0,
+            'current_raw_count': 0,
+            'total_channels': len(targets),
+            'completed_channels_count': 0,
+            'current_channel_name': "任务初始化中...",
+            'start_time': start_time,
+            'hist_speed': get_historical_speed()
+        }
+
+        for i, t in enumerate(targets):
             try:
                 # Resolve entity
                 sid = int(t) if (isinstance(t, str) and (t.isdigit() or t.startswith('-'))) else t
+                
+                # 预扫时更新 UI
+                temp_stats['prescan_done'] = i
+                temp_stats['current_channel_name'] = f"正在预扫 [{i+1}/{len(targets)}] {sid}"
+                update_progress(temp_stats)
+
                 ent = await client.get_entity(sid)
                 if getattr(ent, 'restricted', False):
                     print(f"  ⚠️ [警告] {sid} 被标记为受限，尝试预估任务量...")
                 
-                total_c = await get_total_message_count(client, ent)
-                chat_id_signed = utils.get_peer_id(ent)
+                total_c, _tc_exact = await get_total_message_count(client, ent)
+                chat_id_signed = telethon_utils.get_peer_id(ent)
                 
-                # [NEW] 增量预判逻辑：通过 ID 索引快速定位，不再靠猜标题
+                
+                # [NEW] 提取分类文件夹
+                folder_name = "未分类"
+                try:
+                    idx_info = id_path_index.get(str(chat_id_signed))
+                    if idx_info:
+                        folder_name = idx_info['folder']
+                except: pass
+
+                # [FIX-v4] 深度预估：优先使用 DB/文件断点来计算每个频道的增量预计
                 actual_estimate = total_c
-                if args.incremental:
-                    try:
-                        source_name = getattr(ent, 'title', str(sid))
-                        found_count = 0
-                        idx_info = id_path_index.get(str(chat_id_signed))
-                        
-                        if idx_info:
-                            folder_name = idx_info['folder']
-                            canonical_name = idx_info['name']
-                            base_backups = 'data/archived/backups'
-                            chan_dir = os.path.join(base_backups, safe_dirname(folder_name), safe_dirname(canonical_name))
-                            if os.path.isdir(chan_dir):
-                                _, data = get_latest_backup_data(chan_dir, safe_dirname(canonical_name))
-                                if data:
-                                    found_count = len(data)
-                        
-                        if found_count > 0:
-                            actual_estimate = max(0, total_c - found_count)
-                            print(f"  📊 增量预判: {source_name} 待补充消息 ~{actual_estimate} 条 (已备份 {found_count})")
-                    except Exception as pre_e:
-                        print(f"  ⚠️ 增量预告异常: {pre_e}")
+                source_name = getattr(ent, 'title', str(sid))
+                
+                # 尝试多种手段获取断点
+                last_offset = get_last_recorded_id(chat_id_signed, source_name, folder_name, args.test)
+                
+                if last_offset > 0:
+                    # 如果非全量模式，估算增量
+                    if args.incremental:
+                        actual_estimate, est_is_exact = await get_total_message_count(client, ent, min_id=last_offset)
+                        temp_stats['total_raw_is_exact'] = temp_stats.get('total_raw_is_exact', True) and est_is_exact
+                        prefix = "" if est_is_exact else "~"
+                        print(f"  📊 增量预判: {source_name} 待补充 {prefix}{actual_estimate} 条 (断点 #{last_offset})")
+                    else:
+                        print(f"  📊 全量预判: {source_name} 总计 ~{total_c} 条 (已探测断点 #{last_offset} 但不使用)")
                 
                 total_msg_estimate += actual_estimate
-                target_entities.append((t, actual_estimate))
+                target_entities.append((sid, actual_estimate, folder_name, ent)) # 复用 ent
+                temp_stats['total_raw_estimate'] = total_msg_estimate
             except Exception as e:
                 err_msg = str(e).lower()
                 err_type = type(e).__name__.lower()
                 if "channelprivate" in err_type or "chatwriteforbidden" in err_type or "chatinaccessible" in err_type:
                     print(f"🚷 预扫描发现疑似已退出或失联频道: {t}")
-                target_entities.append((t, 0))
+                target_entities.append((t, 0, "未知分类"))
 
         # 预加载历史备份速度
         hist_speed = get_historical_speed()
 
         global_stats = {
+            "status": "running",
+            "phase": "scanning",  # [NEW] 正式扫描阶段
             "label": label,
-            "total_channels": len(targets),
+            "total_channels": len(target_entities),
+            "accessible_channels_total": len(target_entities),
             "completed_channels_count": 0,
-            "current_channel_name": "准备中...",
-            
-            # [NEW] 双轨机制：分子与分母完全基于原始记录数
-            "total_raw_estimate": total_msg_estimate,
-            "current_raw_count": 0,
-            "current_channel_total_raw": total_msg_estimate,
+            "current_channel_name": "正在初始化...",
+            "current_channel_id": None,
+            "current_channel_total_raw": 0,
             "current_channel_raw_count": 0,
-            
-            # [NEW] 这些仅作为最终展示的数值累加器，不影响进度比例
-            "total_groups_saved": 0, 
             "current_channel_groups_saved": 0,
+            "total_raw_estimate": total_msg_estimate,
+            "total_raw_is_exact": temp_stats.get('total_raw_is_exact', True),  # [NEW] 来自预扫阶段
+            "current_raw_count": 0,
+            "total_groups_saved": 0,
+            "new_messages": 0,
+            "total_messages": 0,
+            "channels": [],
             
-            "new_messages": 0,             # 汇总：新增组数 (用户关注的消息数)
-            "total_messages": 0,           # 汇总：总组数 (用户关注的消息数)
-            "channels": [],                # 各频道结果
-            
-            "base_raw_count": 0,           # 已完成频道的物理数量累加
-            "base_count_groups": 0,        # 已完成频道的组累加
+            "base_raw_count": 0,
+            "base_count_groups": 0,
             
             "estimated_total_time_minutes": round(total_msg_estimate / hist_speed, 1) if total_msg_estimate > 0 else 0,
             "hist_speed": hist_speed,
             "start_time": start_time,
             
-            "status": "running",
             "full_scan": not args.incremental,
             "last_update": time.time()
         }
@@ -811,16 +1205,21 @@ async def main():
             except: pass
 
         results = []
-        for i, (t, t_count) in enumerate(target_entities):
+        for i, (t, t_count, t_folder, t_ent) in enumerate(target_entities):
             if is_stopped(): break
             
-            global_stats['current_channel_name'] = f"正在解析 {t}..."
+            # 更新当前频道信息
+            sid = t
+            source_name = getattr(t_ent, 'title', str(sid)) if t_ent else str(sid) # Handle None for t_ent
+            
+            global_stats['current_channel_id'] = sid
+            global_stats['current_channel_name'] = source_name
             global_stats['current_channel_total_raw'] = t_count
-            global_stats['current_channel_raw_count'] = 0
-            global_stats['current_channel_groups_saved'] = 0
+            global_stats['completed_channels_count'] = i
             update_progress(global_stats)
-
-            res = await backup_channel(client, t, is_test=args.test, global_stats=global_stats, run_label=label)
+            
+            # 开始备份 (复用 t_ent)
+            res = await backup_channel(client, sid, is_test=args.test, global_stats=global_stats, run_label=label, folder_name=t_folder, entity=t_ent)
             
             if res:
                 if isinstance(res, dict) and res.get('status') == 'stopped':
@@ -828,13 +1227,21 @@ async def main():
                 if isinstance(res, dict) and res.get('skipped'):
                     # 全平台封禁：记录跳过但不计入统计
                     global_stats.setdefault('skipped_banned', []).append(res.get('name', str(t)))
-                    global_stats['completed_channels_count'] += 1
+                    global_stats['accessible_channels_total'] = max(0, global_stats.get('accessible_channels_total', len(target_entities)) - 1)
                     update_progress(global_stats)
                     continue
                 results.append(res)
-                # 校准已完成的总量
+                # [FIX-v7] 频道完成后，用实际新增数替换预估数，从分母中去除虚高部分
+                actual_new_raw = res.get('raw_new_count', 0)
+                # t_count 是该频道的预估增量
+                estimated_for_this = t_count
+                overcount = max(0, estimated_for_this - actual_new_raw)
+                if overcount > 0:
+                    global_stats['total_raw_estimate'] = max(global_stats['current_raw_count'], 
+                                                             global_stats['total_raw_estimate'] - overcount)
+                
                 global_stats['base_count_groups'] += res.get('new_count', 0)
-                global_stats['base_raw_count'] += t_count # 理论上应该是实际扫的条数，但这起码不跳变
+                global_stats['base_raw_count'] += actual_new_raw
                 
                 global_stats['total_groups_saved'] = global_stats['base_count_groups']
                 global_stats['current_raw_count'] = global_stats['base_raw_count']
@@ -843,11 +1250,13 @@ async def main():
                 global_stats['total_messages'] += res.get('count', 0)
                 global_stats['channels'].append(res)
                 global_stats['completed_channels_count'] += 1
-                # 强制刷新进度文件以通知 search_bot 任务结果
                 update_progress(global_stats)
             
         final_status = "interrupted" if is_stopped() else "completed"
+        skipped_banned = global_stats.get('skipped_banned', [])
         global_stats['status'] = final_status
+        global_stats['skipped_banned'] = skipped_banned
+        global_stats['total_channels'] = global_stats.get('accessible_channels_total', global_stats.get('total_channels', 0))
         update_progress(global_stats)
             
         elapsed = time.time() - start_time
@@ -857,11 +1266,10 @@ async def main():
             actual_speed = int(global_stats['current_raw_count'] / (elapsed / 60.0))
             if actual_speed > 100:
                 update_historical_speed(actual_speed)
-        skipped_banned = global_stats.get('skipped_banned', [])
         db.finish_backup_run(run_id, {
             "total_messages": global_stats['total_messages'],
             "new_messages": global_stats['new_messages'],
-            "total_channels": global_stats['completed_channels_count'],
+            "total_channels": global_stats.get('accessible_channels_total', global_stats['completed_channels_count']),
             "channels": global_stats['channels'],
             "duration": f"{elapsed/60:.1f} min",
             "skipped_banned": skipped_banned
