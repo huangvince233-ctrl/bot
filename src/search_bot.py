@@ -2156,76 +2156,126 @@ async def tree_run_callback(event):
         await execute_backup(event, mode, ids=ids_str, is_test=is_test, incremental=is_inc)
 
 async def execute_advanced_search(event, query, search_type='keyword'):
-    """执行深度检索并渲染带 Deep Link 的结果"""
+    """执行深度检索并展示结果 (v3.0 整合版)"""
+    # 1. 自动识别 query 里的 prefix (如 creator:窒物者)
+    if ':' in str(query):
+        parts = query.split(':', 1)
+        if parts[0] in ['creator', 'actor', 'tag', 'keyword']:
+            search_type = parts[0]
+            query = parts[1]
+
     print(f"🔍 Executing {search_type} search for: {query}")
+    if isinstance(event, events.CallbackQuery.Event):
+        try: await event.answer(f"🔍 正在搜索: {query}...", alert=False)
+        except: pass
+
+    # 获取结果（仅已同步消息，附带原始来源与同步号）
     rows = db.search_with_sync_links(query, search_type=search_type)
     
     if not rows:
         await event.respond(f"❌ 未找到与 `{query}` 相关的资源。")
         return
 
-    # 清洗群组 ID (去掉 -100 前缀) 用于构建 Deep Link
+    # 清洗默认群组 ID 用于构建链接
     clean_group_id = str(TARGET_GROUP_ID).replace('-100', '')
     
-    # 构建响应文本
-    type_name = '关键词' if search_type=='keyword' else '创作者' if search_type=='creator' else '模特'
-    lines = [f"📊 **检索结果 ({type_name}): `{query}`**", "━━━━━━━━━━━━━━"]
+    # 构建标题
+    type_name = {'keyword':'关键词', 'creator':'创作者', 'actor':'模特/演员', 'tag':'标签'}.get(search_type, '搜索')
+    lines = [f"📊 **'{query}' 的检索结果 ({type_name})**", "━━━━━━━━━━━━━━"]
     
     count = 0
     for r in rows:
-        # 匹配 SQL: g.chat_name, g.msg_type, g.sender_name, g.original_time, g.text_content, m.forwarded_msg_id, g.chat_id, g.msg_id, g.search_tags
-        chat_name, msg_type, sender, o_time, text, f_msg_id, o_chat_id, o_msg_id, tags = r
+        # r: 0:source_chat_name, 1:msg_type, 2:sender, 3:otime, 4:text, 5:f_msg_id,
+        #    6:original_chat_id, 7:original_msg_id, 8:tags, 9:file_name,
+        #    10:f_chat_id, 11:source_chat_title, 12:run_label, 13:target_chat_title, 14:is_synced
+        chat_name, mtype, sender, o_time, text, f_msg_id, o_chat_id, o_msg_id, tags, f_name, f_chat_id, source_chat_title, run_label, target_chat_title, is_synced = r
         
-        # [FILTER] 仅展示含资源或含链接的消息
+        # [FILTER] 仅展示含媒体或链接的消息
         has_url = False
         if text and re.search(r'https?://\S+|t.me/\S+', text):
             has_url = True
-            
-        has_media = msg_type in ('video', 'photo', 'file', 'gif')
-        has_link = msg_type in ('link', 'link_preview') or has_url
+        has_media = mtype in ('video', 'photo', 'file', 'gif')
+        has_link = mtype in ('link', 'link_preview') or has_url
         
         if not (has_media or has_link):
             continue
 
         count += 1
-        # 截取文本摘要
-        summary = text[:50].replace('\n', ' ') if text else "无描述文案"
+        
+        # 整理图标与时长
+        icon = {"video": "🎬", "photo": "🖼️", "file": "📄", "gif": "🎞️"}.get(mtype, "📝")
+        duration = ""
+        combined_text = (text or "") + (f_name or "")
+        dur_match = re.search(r'\[(\d{1,2}:\d{2})\]', combined_text)
+        if dur_match:
+            duration = f"[{dur_match.group(1)}]"
+
+        # 优化显示标题：优先用文案开头，文案包含热词的上下文更好
+        display_text = ""
+        if text:
+            # 去除冗余符号和时长标记
+            clean_text = text.replace('\n', ' ').strip()
+            clean_text = re.sub(r'\[\d{1,2}:\d{2}\]', '', clean_text).strip()
+            # 如果文案很短，直接用；如果长，取开头
+            display_text = clean_text[:50] + "..." if len(clean_text) > 50 else clean_text
+        
+        if not display_text and f_name:
+            display_text = re.sub(r'\[\d{1,2}:\d{2}\]', '', f_name).strip()
+            
+        if not display_text:
+            display_text = f"资源 {o_msg_id}"
+
+        if len(display_text) > 40:
+            display_text = display_text[:37] + "..."
+
+
         time_str = o_time[:10] if o_time else "未知时间"
         
-        icon = "🎬" if msg_type == 'video' else "🖼️" if msg_type == 'photo' else "📎"
-        
-        # 构建链接
-        if f_msg_id:
-            link = f"https://t.me/c/{clean_group_id}/{f_msg_id}"
-            line = f"{count}. {icon} [{summary}]({link})\n   └ 📅 `{time_str}` | 👤 `{sender or chat_name}`"
+        # 构建已同步消息 Deep Link
+        link = None
+        if is_synced and f_msg_id:
+            d_id = str(f_chat_id or clean_group_id).replace('-100', '')
+            link = f"https://t.me/c/{d_id}/{f_msg_id}"
+
+        source_label = source_chat_title or chat_name or (f"频道 {o_chat_id}" if o_chat_id else "未知来源")
+        if link:
+            title_part = f"[{display_text}]({link})"
         else:
-            # 如果没同步过，仅展示本地备份存在
-            line = f"{count}. {icon} {summary} (仅备份)\n   └ 📅 `{time_str}` | 👤 `{sender or chat_name}`"
-            
+            title_part = display_text
+
+        line = f"{count}. {icon}{duration} {title_part}\n   └ 📅 `{time_str}` | 👤 `{sender or chat_name}` | 📌 来源: `{source_label}`"
+        if run_label:
+            line += f" | 🔢 同步号: `{run_label}`"
+        if is_synced:
+            target_label = target_chat_title or (f"频道 {f_chat_id}" if f_chat_id else "未知目标")
+            if target_label:
+                line += f"\n   └ 📢 已同步到: `{target_label}`"
+        else:
+            line += "\n   └ ⚠️ 当前仅存在原始入库/打标记录，未建立同步映射"
+        
         if tags:
-            line += f" | 🏷️ `{tags}`"
+            tag_disp = tags[:25] + ".." if len(tags) > 25 else tags
+            line += f" | 🏷️ `{tag_disp}`"
             
         lines.append(line)
         
-        if count >= 15: # 最多展示 15 条
+        if count >= 30: # 最多 30 条
             lines.append("... (更多结果请缩小搜索范围)")
             break
 
-    if count == 0:
-        await event.respond(f"❌ 未找到包含媒体或链接的 `{query}` 相关资源。")
-        return
-
     final_text = "\n".join(lines)
+    buttons = [[Button.inline("🔙 返回搜索中心", b"nav_search_center")]]
     
-    # [OPTIMIZATION] 如果是从按钮触发的（CallbackQuery），先尝试编辑原菜单
-    # 这样用户感觉是“切换”到了结果页面
     try:
         if isinstance(event, events.CallbackQuery.Event):
-            await event.edit(final_text, link_preview=False, buttons=[[Button.inline("🔙 返回搜索中心", b"nav_search_center")]])
+            await event.edit(final_text, link_preview=False, buttons=buttons)
         else:
-            await event.respond(final_text, link_preview=False)
+            await event.respond(final_text, link_preview=False, buttons=buttons)
     except Exception as e:
         print(f"⚠️ execute_advanced_search failed: {e}")
+        try: await event.respond(final_text, link_preview=False, buttons=buttons)
+        except: pass
+
 
 # ===== Mode 3: 检索与分析中心 =====
 
@@ -2319,8 +2369,7 @@ async def trigger_discovery_pipeline(event):
                 # Step 1: Program 0 - Import Backups
                 p0 = await asyncio.create_subprocess_shell(
                     f'"{py}" src/search_mode/program1_discovery/import_backups.py --bot "{BOT_NAME}"',
-                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-                    encoding='utf-8'
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
                 )
                 await p0.communicate()
                 
@@ -2472,24 +2521,19 @@ async def sc_cat_list_callback(event):
     temp_row = []
     for kw in kws:
         name = kw['name']
-        temp_row.append(Button.inline(name, f"do_search_{name}".encode()))
+        temp_row.append(Button.inline(name, f"do_search_tag:{name}".encode()))
         if len(temp_row) == 2:
             buttons.append(temp_row)
             temp_row = []
     if temp_row: buttons.append(temp_row)
+
     
     buttons.append([Button.inline("🔙 返回分类列表", b"nav_search_categories")])
     await event.edit("\n".join(lines), buttons=buttons)
 
-@bot.on(events.CallbackQuery(data=re.compile(br'do_search_(.+)')))
-async def do_search_button_callback(event):
-    query = event.data_match.group(1).decode()
-    # 智能探测 query 类型（简单处理：如果在演员表里就搜演员，否则关键词）
-    # 或者通过 callback data 显式传递类型。这里为了兼容现有代码，采取稍微智能的 fallback
-    stype = 'keyword'
-    # ... 
-    await event.answer(f"🔍 正在搜索: {query}", alert=False)
-    await execute_advanced_search(event, query, search_type=stype)
+
+
+
 
 @bot.on(events.CallbackQuery(data=re.compile(br'sc_search_(.+)')))
 async def search_input_trigger_callback(event):
@@ -2834,7 +2878,8 @@ async def render_entity_list(event, etype, offset=0):
              name = e['name']
              count = e.get('msg_count', 0)
              display = f"{emoji} {name} ({count})" if count else f"{emoji} {name}"
-             buttons.append([Button.inline(display, f"do_search_{name}".encode())])
+             buttons.append([Button.inline(display, f"do_search_{etype}:{name}".encode())])
+
         
         nav_row = []
         if offset > 0: nav_row.append(Button.inline("⬅️ 上一页", f"sc_list_{etype}_{offset-limit}".encode()))
@@ -2955,70 +3000,9 @@ async def render_entity_list_by_letter(event, etype, letter):
     except Exception as e:
         await event.respond(f"❌ 加载实体列表失败: {e}")
 
-async def execute_advanced_search(event, query, search_type='keyword'):
-    """执行深度检索并返回图文结果"""
-    await event.answer(f"🔍 正在检索: {query}...", alert=False)
-    results = db.search_with_sync_links(query)
-    
-    if not results:
-        await event.respond(f"❌ 未找到与 `{query}` 相关的记录。")
-        return
 
-    msg = [f"🔍 **'{query}' 的检索结果 (最新30条)**\n"]
-    
-    for r in results:
-        # r: (chat_name, msg_type, sender_name, original_time, text_content, forwarded_msg_id, forwarded_chat_id, msg_id, file_name)
-        chat_name, mtype, sender, otime, text, fwd_id, cid, mid, fname = r
-        icon = {"video": "🎬", "photo": "🖼️", "file": "📄", "gif": "🎞️"}.get(mtype, "📝")
-        
-        # 尝试从文本或文件名中提取时长 [MM:SS]
-        duration = ""
-        combined_text = (text or "") + (fname or "")
-        dur_match = re.search(r'\[(\d{1,2}:\d{2})\]', combined_text)
-        if dur_match:
-            duration = f"[{dur_match.group(1)}]"
-        
-        # 优化显示文本：优先用文本第一行，否则用文件名，否则用类型
-        display_text = ""
-        if text:
-            first_line = text.split('\n')[0].strip().strip('#')
-            # 移除已有的 [MM:SS] 避免重复
-            first_line = re.sub(r'\[\d{1,2}:\d{2}\]', '', first_line).strip()
-            display_text = first_line
-        
-        if not display_text and fname:
-            display_text = re.sub(r'\[\d{1,2}:\d{2}\]', '', fname).strip()
-            
-        if not display_text:
-            display_text = f"未命名资源 {mid}"
 
-        # 限制长度
-        if len(display_text) > 40:
-            display_text = display_text[:37] + "..."
 
-        if fwd_id:
-            # [V2.0] 使用记录中的 forwarded_chat_id 构建链接
-            d_id = str(cid or 0).replace('-100', '')
-            link = f"https://t.me/c/{d_id}/{fwd_id}"
-            msg.append(f"{icon}{duration} [{display_text}]({link})")
-        else:
-            msg.append(f"{icon}{duration} {display_text} *(仅备份)*")
-
-    # 注入页脚：热搜与传送门
-    hot_search = "热搜: 高中生 萝莉 精神小妹 强奸 小屁大王 巨乳 萝莉岛 cos "
-    msg.append(f"\n`{hot_search}` ❝")
-
-    final_results = "\n".join(msg)
-    try:
-        buttons = [[Button.inline("🔙 返回搜索中心", b"nav_search_center")]]
-        if isinstance(event, events.CallbackQuery.Event):
-            await event.edit(final_results, link_preview=False, buttons=buttons)
-        else:
-            await event.respond(final_results, link_preview=False, buttons=buttons)
-    except Exception as e:
-        print(f"⚠️ Search result send failed: {e}")
-        # 兜底：如果 edit 失败，尝试发送新消息
-        await event.respond(final_results, link_preview=False, buttons=buttons)
 
 
 
@@ -3166,8 +3150,7 @@ async def execute_backup(event, mode, folder=None, ids=None, is_test=False, incr
             process = await asyncio.create_subprocess_shell(
                 cmd,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                encoding='utf-8'
+                stderr=asyncio.subprocess.PIPE
             )
 
             # 监控循环
@@ -3262,7 +3245,7 @@ async def execute_backup(event, mode, folder=None, ids=None, is_test=False, incr
                 
                 # 执行 update_docs.py 进行全局元数据建档扫描
                 py = sys.executable
-                p3 = await asyncio.create_subprocess_shell(f'"{py}" src/sync_mode/update_docs.py', stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, encoding='utf-8')
+                p3 = await asyncio.create_subprocess_shell(f'"{py}" src/sync_mode/update_docs.py', stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
                 await p3.communicate()
                 
                 # 发送汇总报告

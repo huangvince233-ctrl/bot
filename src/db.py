@@ -85,6 +85,16 @@ class Database:
             self.conn.commit()
         except sqlite3.OperationalError:
             pass
+        try:
+            self.cursor.execute("ALTER TABLE messages ADD COLUMN is_quarantined INTEGER DEFAULT 0")
+            self.conn.commit()
+        except sqlite3.OperationalError:
+            pass
+        try:
+            self.cursor.execute("ALTER TABLE messages ADD COLUMN quarantine_reason TEXT DEFAULT NULL")
+            self.conn.commit()
+        except sqlite3.OperationalError:
+            pass
 
 
         # 目标群组注册表 [NEW]
@@ -219,6 +229,14 @@ class Database:
         # 增加 forwarded_chat_id [v2.0]
         try:
             self.cursor.execute('ALTER TABLE messages ADD COLUMN forwarded_chat_id INTEGER')
+        except:
+            pass
+        try:
+            self.cursor.execute('ALTER TABLE messages ADD COLUMN is_quarantined INTEGER DEFAULT 0')
+        except:
+            pass
+        try:
+            self.cursor.execute('ALTER TABLE messages ADD COLUMN quarantine_reason TEXT DEFAULT NULL')
         except:
             pass
         
@@ -1118,47 +1136,240 @@ class Database:
 
     def search_with_sync_links(self, query, search_type='keyword'):
         """
-        深度检索：以备份库(global_messages)为基准，关联同步库(messages)的转发ID。
+      深度检索：仅返回已同步到目标库的消息，并补充原始来源与同步信息。
         search_type: 'keyword', 'creator', 'actor'
-        返回: (chat_name, msg_type, sender_name, original_time, text_content, forwarded_msg_id, forwarded_chat_id, original_msg_id)
+        返回: (source_chat_name, msg_type, sender_name, original_time, text_content,
+          forwarded_msg_id, original_chat_id, original_msg_id, search_tags,
+          file_name, forwarded_chat_id, source_chat_title, run_label, target_chat_title)
         """
         # 构造搜索条件
         if search_type == 'creator':
-            cond = "gm.creator LIKE ?"
+            cond = "(gm.creator LIKE ? OR gm.search_tags LIKE ? OR gm.text_content LIKE ? OR gm.file_name LIKE ?)"
         elif search_type == 'actor':
-            cond = "gm.actor LIKE ?"
+            cond = "(gm.actor LIKE ? OR gm.search_tags LIKE ? OR gm.text_content LIKE ? OR gm.file_name LIKE ?)"
+        elif search_type == 'tag':
+            cond = "(gm.search_tags LIKE ? OR gm.keywords LIKE ?)"
         else:
-            cond = "(gm.text_content LIKE ? OR gm.search_tags LIKE ? OR gm.keywords LIKE ?)"
+
+            # 全量关键词搜索：涵盖文本、文件名、标签、关键字、补充信息
+            cond = "(gm.text_content LIKE ? OR gm.file_name LIKE ? OR gm.search_tags LIKE ? OR gm.keywords LIKE ? OR gm.supplement LIKE ?)"
             
         params = [f"%{query}%"]
-        if search_type == 'keyword':
-            params = [f"%{query}%", f"%{query}%", f"%{query}%"]
+        if search_type in ('creator', 'actor'):
+            params = [f"%{query}%"] * 4
+        elif search_type == 'keyword':
+            params = [f"%{query}%"] * 5
+
+        media_filter = "gm.msg_type IN ('video', 'photo', 'file', 'gif', 'link', 'link_preview')"
 
         sql = f'''
             SELECT gm.chat_name, gm.msg_type, gm.sender_name, gm.original_time, gm.text_content, 
-                   m.forwarded_msg_id, m.forwarded_chat_id, gm.msg_id, gm.file_name
+                   m.forwarded_msg_id, gm.chat_id, gm.msg_id, gm.search_tags, gm.file_name,
+                   COALESCE(m.forwarded_chat_id, sr.target_group_id) AS forwarded_chat_id,
+                   gm.chat_name AS source_chat_title,
+                   sr.is_test,
+                   sr.formal_number,
+                   sr.test_number,
+                   sr.bot_name,
+                   COALESCE(tg.title, cn.latest_name, cn.canonical_name, fg.chat_name) AS target_chat_title,
+                   CASE WHEN m.forwarded_msg_id IS NOT NULL THEN 1 ELSE 0 END AS is_synced
             FROM global_messages gm
-            LEFT JOIN messages m ON m.original_chat_id = gm.chat_id AND m.original_msg_id = gm.msg_id
-            WHERE {cond}
-            ORDER BY gm.original_time DESC LIMIT 30
+            LEFT JOIN messages m ON ABS(m.original_chat_id) % 1000000000000 = ABS(gm.chat_id) % 1000000000000 AND m.original_msg_id = gm.msg_id
+            LEFT JOIN sync_runs sr ON sr.run_id = m.sync_run_id
+            LEFT JOIN target_groups tg ON tg.chat_id = COALESCE(m.forwarded_chat_id, sr.target_group_id)
+            LEFT JOIN channel_names cn ON cn.chat_id = COALESCE(m.forwarded_chat_id, sr.target_group_id)
+            LEFT JOIN global_messages fg ON fg.chat_id = COALESCE(m.forwarded_chat_id, sr.target_group_id) AND fg.msg_id = m.forwarded_msg_id
+            WHERE ({cond}) AND {media_filter} AND m.forwarded_msg_id IS NOT NULL
+            ORDER BY gm.original_time DESC LIMIT 200
         '''
-        
-        return self.cursor.execute(sql, params).fetchall()
+
+        rows = self.cursor.execute(sql, params).fetchall()
+        formatted_rows = []
+        for row in rows:
+            (
+                chat_name, msg_type, sender_name, original_time, text_content,
+                forwarded_msg_id, original_chat_id, original_msg_id, search_tags, file_name,
+                forwarded_chat_id, source_chat_title, is_test, formal_number, test_number,
+                bot_name, target_chat_title, is_synced
+            ) = row
+
+            run_label = None
+            if bot_name is not None:
+                prefix = "P" if bot_name == 'my_porn_private_bot' else ""
+                if is_test:
+                    run_label = f"{prefix}TEST-{test_number}" if test_number is not None else f"{prefix}TEST"
+                else:
+                    run_label = f"{prefix}#{formal_number}" if formal_number is not None else f"{prefix}RUN"
+
+            formatted_rows.append((
+                chat_name, msg_type, sender_name, original_time, text_content,
+                forwarded_msg_id, original_chat_id, original_msg_id, search_tags, file_name,
+                forwarded_chat_id, source_chat_title, run_label, target_chat_title, bool(is_synced)
+            ))
+
+        return formatted_rows
+
 
     # ===== 消息存档 =====
     def save_message(self, sync_run_id, msg_type, original_msg_id, original_chat_id, 
                      forwarded_msg_id, res_id, res_photo_id=0, res_video_id=0, 
                      res_other_id=0, res_text_id=0, forwarded_chat_id=None, header_msg_id=0):
+        normalized_original_chat_id = self._normalize_id(original_chat_id)
         self.cursor.execute('''
             INSERT INTO messages (
                 sync_run_id, msg_type, original_msg_id, original_chat_id, 
                 forwarded_msg_id, forwarded_chat_id, res_id, res_photo_id, 
                 res_video_id, res_other_id, res_text_id, header_msg_id
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (sync_run_id, msg_type, original_msg_id, original_chat_id, 
+        ''', (sync_run_id, msg_type, original_msg_id, normalized_original_chat_id, 
               forwarded_msg_id, forwarded_chat_id, res_id, res_photo_id, 
               res_video_id, res_other_id, res_text_id, header_msg_id))
         self.conn.commit()
+
+    def normalize_message_chat_ids(self):
+        """历史修复：统一 messages.original_chat_id 为规范化格式，修复 -100 前缀缺失导致的关联失败。"""
+        rows = self.cursor.execute('SELECT id, original_chat_id FROM messages').fetchall()
+        updated = 0
+        for row_id, original_chat_id in rows:
+            norm = self._normalize_id(original_chat_id)
+            if original_chat_id != norm:
+                self.cursor.execute('UPDATE messages SET original_chat_id = ? WHERE id = ?', (norm, row_id))
+                updated += 1
+        self.conn.commit()
+        return updated
+
+    def audit_sync_mapping_integrity(self):
+        """全库体检：检查历史同步映射与 global_messages 的关联一致性。"""
+        report = {}
+
+        total_messages = self.cursor.execute('SELECT COUNT(*) FROM messages').fetchone()[0] or 0
+        total_global = self.cursor.execute('SELECT COUNT(*) FROM global_messages').fetchone()[0] or 0
+        broken_literal_join = self.cursor.execute('''
+            SELECT COUNT(*)
+            FROM messages m
+            LEFT JOIN global_messages g
+              ON m.original_chat_id = g.chat_id AND m.original_msg_id = g.msg_id
+            WHERE g.msg_id IS NULL
+        ''').fetchone()[0] or 0
+        broken_normalized_join = self.cursor.execute('''
+            SELECT COUNT(*)
+            FROM messages m
+            LEFT JOIN global_messages g
+              ON ABS(m.original_chat_id) % 1000000000000 = ABS(g.chat_id) % 1000000000000
+             AND m.original_msg_id = g.msg_id
+            WHERE g.msg_id IS NULL
+        ''').fetchone()[0] or 0
+        old_format_rows = self.cursor.execute('''
+            SELECT COUNT(*)
+            FROM messages
+            WHERE original_chat_id < 0 AND CAST(ABS(original_chat_id) AS TEXT) NOT LIKE '100%'
+        ''').fetchone()[0] or 0
+
+        top_problem_channels = self.cursor.execute('''
+            SELECT
+                COALESCE(g.chat_name, '未知频道') AS chat_name,
+                ABS(m.original_chat_id) % 1000000000000 AS norm_chat_id,
+                COUNT(*) AS cnt
+            FROM messages m
+            LEFT JOIN global_messages g
+              ON ABS(m.original_chat_id) % 1000000000000 = ABS(g.chat_id) % 1000000000000
+             AND m.original_msg_id = g.msg_id
+            WHERE g.msg_id IS NULL
+            GROUP BY ABS(m.original_chat_id) % 1000000000000, COALESCE(g.chat_name, '未知频道')
+            ORDER BY cnt DESC
+            LIMIT 30
+        ''').fetchall()
+
+        synced_channels_without_mappings = self.cursor.execute('''
+            SELECT g.chat_name, COUNT(*)
+            FROM global_messages g
+            WHERE EXISTS (
+                SELECT 1 FROM sync_offsets so
+                WHERE ABS(so.chat_id) % 1000000000000 = ABS(g.chat_id) % 1000000000000
+            )
+            AND NOT EXISTS (
+                SELECT 1 FROM messages m
+                WHERE ABS(m.original_chat_id) % 1000000000000 = ABS(g.chat_id) % 1000000000000
+                  AND m.original_msg_id = g.msg_id
+            )
+            GROUP BY g.chat_id, g.chat_name
+            ORDER BY COUNT(*) DESC
+            LIMIT 30
+        ''').fetchall()
+
+        orphan_message_rows = self.cursor.execute('''
+            SELECT m.id, m.sync_run_id, m.original_chat_id, m.original_msg_id, m.forwarded_chat_id, m.forwarded_msg_id
+            FROM messages m
+            LEFT JOIN global_messages g
+              ON ABS(m.original_chat_id) % 1000000000000 = ABS(g.chat_id) % 1000000000000
+             AND m.original_msg_id = g.msg_id
+            WHERE g.msg_id IS NULL
+            ORDER BY m.id
+            LIMIT 100
+        ''').fetchall()
+
+        report['summary'] = {
+            'messages_rows': int(total_messages),
+            'global_messages_rows': int(total_global),
+            'broken_literal_join': int(broken_literal_join),
+            'broken_normalized_join': int(broken_normalized_join),
+            'old_format_message_chat_ids': int(old_format_rows),
+        }
+        report['top_problem_channels'] = [
+            {'chat_name': row[0], 'norm_chat_id': int(row[1]), 'count': int(row[2])}
+            for row in top_problem_channels
+        ]
+        report['synced_channels_without_mappings'] = [
+            {'chat_name': row[0], 'count': int(row[1])}
+            for row in synced_channels_without_mappings
+        ]
+        report['orphan_message_rows'] = [
+            {
+                'id': int(row[0]),
+                'sync_run_id': int(row[1]) if row[1] is not None else None,
+                'original_chat_id': int(row[2]) if row[2] is not None else None,
+                'original_msg_id': int(row[3]) if row[3] is not None else None,
+                'forwarded_chat_id': int(row[4]) if row[4] is not None else None,
+                'forwarded_msg_id': int(row[5]) if row[5] is not None else None,
+            }
+            for row in orphan_message_rows
+        ]
+        return report
+
+    def repair_and_audit_sync_mappings(self):
+        """执行历史修复并返回修复前后体检报告。"""
+        before = self.audit_sync_mapping_integrity()
+        normalized_count = self.normalize_message_chat_ids()
+        after = self.audit_sync_mapping_integrity()
+        return {
+            'normalized_message_chat_ids': int(normalized_count),
+            'before': before,
+            'after': after,
+        }
+
+    def quarantine_orphan_message_rows(self, sync_run_id=None, reason='missing_global_message'):
+        """隔离无法关联到 global_messages 的 messages 记录，避免影响搜索与后续诊断。"""
+        where = '''
+            id IN (
+                SELECT m.id
+                FROM messages m
+                LEFT JOIN global_messages g
+                  ON ABS(m.original_chat_id) % 1000000000000 = ABS(g.chat_id) % 1000000000000
+                 AND m.original_msg_id = g.msg_id
+                WHERE g.msg_id IS NULL
+            )
+        '''
+        params = []
+        if sync_run_id is not None:
+            where += ' AND sync_run_id = ?'
+            params.append(sync_run_id)
+        self.cursor.execute(
+            f'UPDATE messages SET is_quarantined = 1, quarantine_reason = ? WHERE {where}',
+            [reason, *params]
+        )
+        updated = self.cursor.rowcount or 0
+        self.conn.commit()
+        return int(updated)
 
     def save_global_message(self, chat_id, chat_name, msg_id, msg_type, sender_name,
                             original_time, text_content, file_name=None, media_group_id=None,
